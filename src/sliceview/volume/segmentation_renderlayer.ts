@@ -75,6 +75,7 @@ export interface SliceViewSegmentationDisplayState
   notSelectedAlpha: WatchableValueInterface<number>;
   hideSegmentZero: WatchableValueInterface<boolean>;
   ignoreNullVisibleSet: WatchableValueInterface<boolean>;
+  crossSectionOutline: WatchableValueInterface<boolean>;
 }
 
 interface ShaderParameters {
@@ -85,6 +86,7 @@ interface ShaderParameters {
   hideSegmentZero: boolean;
   hasSegmentDefaultColor: boolean;
   hasHighlightColor: boolean;
+  crossSectionOutline: boolean;
 }
 
 const HAS_SELECTED_SEGMENT_FLAG = 1;
@@ -161,6 +163,7 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
           ),
         ),
         hideSegmentZero: displayState.hideSegmentZero,
+        crossSectionOutline: displayState.crossSectionOutline,
         baseSegmentColoring: displayState.baseSegmentColoring,
         baseSegmentHighlighting: displayState.baseSegmentHighlighting,
       })),
@@ -206,6 +209,9 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
     this.registerDisposer(
       displayState.ignoreNullVisibleSet.changed.add(this.redrawNeeded.dispatch),
     );
+    this.registerDisposer(
+      displayState.crossSectionOutline.changed.add(this.redrawNeeded.dispatch),
+    );
   }
 
   disposed() {
@@ -226,10 +232,17 @@ export class SegmentationRenderLayer extends SliceViewVolumeRenderLayer<ShaderPa
     let getUint64Code = `
 uint64_t getUint64DataValue() {
   uint64_t x = toUint64(getDataValue());
-`;
-    getUint64Code += `return x;
+  return x;
 }
 `;
+    if (parameters.crossSectionOutline) {
+      getUint64Code += `
+uint64_t getUint64DataValueAtOffset(vec3 offset) {
+  highp ivec3 p = ivec3(max(vec3(0.0, 0.0, 0.0), min(floor(vChunkPosition + offset), uChunkDataSize - 1.0)));
+  return toUint64(getDataValueAt(p));
+}
+`;
+    }
     builder.addFragmentCode(getUint64Code);
     if (parameters.hasEquivalences) {
       this.equivalencesShaderManager.defineShader(builder);
@@ -272,6 +285,24 @@ uint64_t getMappedObjectId(uint64_t value) {
   if (value.value[0] == 0u && value.value[1] == 0u) {
     emit(vec4(vec4(0, 0, 0, 0)));
     return;
+  }
+`;
+    }
+    if (parameters.crossSectionOutline) {
+      fragmentMain += `
+  {
+    vec3 dpdx = dFdx(vChunkPosition);
+    vec3 dpdy = dFdy(vChunkPosition);
+    uint64_t left  = getMappedObjectId(getUint64DataValueAtOffset(-dpdx));
+    uint64_t right = getMappedObjectId(getUint64DataValueAtOffset( dpdx));
+    uint64_t up    = getMappedObjectId(getUint64DataValueAtOffset(-dpdy));
+    uint64_t down  = getMappedObjectId(getUint64DataValueAtOffset( dpdy));
+    bool isBorder = (!equals(left, value) || !equals(right, value) ||
+                     !equals(up, value) || !equals(down, value));
+    if (!isBorder) {
+      emit(vec4(0.0, 0.0, 0.0, 0.0));
+      return;
+    }
   }
 `;
     }
