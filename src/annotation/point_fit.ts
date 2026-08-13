@@ -36,12 +36,20 @@ export interface VoxelPatch {
   size: readonly [number, number, number];
 }
 
+export interface PointFitterOptions {
+  /** Fraction of the peak height below which samples are excluded from the fit. */
+  relativeThreshold?: number;
+  /** Minimum number of above-threshold samples required before attempting a fit. */
+  minSamples?: number;
+}
+
 /**
  * Returns the fitted center as fractional patch indices, or `undefined` if no center could be
  * determined.
  */
 export type PointFitter = (
   patch: VoxelPatch,
+  options?: PointFitterOptions,
 ) => [number, number, number] | undefined;
 
 const pointFitters = new Map<string, PointFitter>();
@@ -61,15 +69,18 @@ export function getPointFitterNames(): string[] {
 export const DEFAULT_POINT_FITTER = "gaussianNonlinear";
 
 /**
- * Minimum number of above-threshold samples required before attempting a fit.  A lone hot pixel,
- * or a couple of them, has no spatial extent to fit a Gaussian to.
+ * Default minimum number of above-threshold samples required before attempting a fit.  A lone hot
+ * pixel, or a couple of them, has no spatial extent to fit a Gaussian to.
  */
-const MIN_SAMPLES = 14;
+export const DEFAULT_MIN_SAMPLES = 14;
+
+/** Upper bound offered in the UI; not otherwise meaningful. */
+export const MAX_MIN_SAMPLES = 500;
 
 /**
- * Fraction of the peak height below which samples are excluded from the fit.
+ * Default fraction of the peak height below which samples are excluded from the fit.
  */
-const DEFAULT_RELATIVE_THRESHOLD = 0.2;
+export const DEFAULT_RELATIVE_THRESHOLD = 0.2;
 
 /**
  * Rescales patch samples in place to [0, 1], so the fitter below sees a fixed dynamic range
@@ -204,9 +215,12 @@ function evaluateModel(
  */
 export function gaussianNonlinearFitter(
   patch: VoxelPatch,
-  options: { relativeThreshold?: number } = {},
+  options: PointFitterOptions = {},
 ): [number, number, number] | undefined {
-  const { relativeThreshold = DEFAULT_RELATIVE_THRESHOLD } = options;
+  const {
+    relativeThreshold = DEFAULT_RELATIVE_THRESHOLD,
+    minSamples = DEFAULT_MIN_SAMPLES,
+  } = options;
   const { data, size } = patch;
   let background = Number.POSITIVE_INFINITY;
   let peak = Number.NEGATIVE_INFINITY;
@@ -240,7 +254,7 @@ export function gaussianNonlinearFitter(
   }
   // A lone hot pixel, or a couple of them, has no spatial extent to fit a Gaussian to: the solve
   // would just shrink sigma to wrap it and report a spuriously confident center.
-  if (aboveThreshold < MIN_SAMPLES) return undefined;
+  if (aboveThreshold < minSamples) return undefined;
   const meanX = sumX / totalWeight;
   const meanY = sumY / totalWeight;
   const meanZ = sumZ / totalWeight;

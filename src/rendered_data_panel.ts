@@ -760,6 +760,8 @@ export abstract class RenderedDataPanel extends RenderedPanel {
           radius: owningLayer.annotationFit.radius.value,
           method: owningLayer.annotationFit.method.value,
           invert: owningLayer.annotationFit.invert.value,
+          relativeThreshold: owningLayer.annotationFit.relativeThreshold.value,
+          minSamples: owningLayer.annotationFit.minSamples.value,
         });
         const newPoint = getGlobalPositionInAnnotationCoordinates(
           fitted,

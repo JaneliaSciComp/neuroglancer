@@ -192,6 +192,31 @@ describe("gaussianNonlinearFitter", () => {
       gaussianNonlinearFitter({ data, size: [SIZE, SIZE, SIZE] }),
     ).toBeUndefined();
   });
+
+  it("honors a custom minSamples", () => {
+    const patch = makeGaussianPatch([5.3, 4.7, 6.1], 1.5);
+    // A patch that fits by default is rejected once minSamples demands more above-threshold
+    // samples than this narrow a Gaussian ever lights up.
+    expect(
+      gaussianNonlinearFitter(patch, { minSamples: 10000 }),
+    ).toBeUndefined();
+  });
+
+  it("honors a custom relativeThreshold", () => {
+    const center: [number, number, number] = [5.3, 4.7, 6.1];
+    const patch = makeGaussianPatch(center, 1.5);
+    // A much higher threshold confines the fit to a tighter core around the peak, but a clean
+    // Gaussian still fits accurately.
+    const result = gaussianNonlinearFitter(patch, { relativeThreshold: 0.6 });
+    expect(result).toBeDefined();
+    for (let i = 0; i < 3; ++i) {
+      expect(Math.abs(result![i] - center[i])).toBeLessThan(1e-6);
+    }
+    // A threshold at 1 excludes every sample (nothing exceeds the peak height itself).
+    expect(
+      gaussianNonlinearFitter(patch, { relativeThreshold: 1 }),
+    ).toBeUndefined();
+  });
 });
 
 describe("normalizePatch", () => {

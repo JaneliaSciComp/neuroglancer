@@ -87,6 +87,10 @@ export interface FitSettings {
   method: string;
   /** Fit a dark blob on a bright background, rather than a bright blob on a dark background. */
   invert: boolean;
+  /** Fraction of the peak height below which samples are excluded from the fit. */
+  relativeThreshold: number;
+  /** Minimum number of above-threshold samples required before attempting a fit. */
+  minSamples: number;
 }
 
 /**
@@ -215,7 +219,10 @@ export function fitGlobalPosition(
   // They also fit a bright peak, so a dark feature must be inverted first.
   normalizePatch(sampled.patch, settings.invert);
   const fit: PointFitter | undefined = getPointFitter(settings.method);
-  const center = fit?.(sampled.patch);
+  const center = fit?.(sampled.patch, {
+    relativeThreshold: settings.relativeThreshold,
+    minSamples: settings.minSamples,
+  });
   if (center === undefined) {
     StatusMessage.showTemporaryMessage(
       `Cannot snap to fit: the ${settings.method} fit did not converge within ` +

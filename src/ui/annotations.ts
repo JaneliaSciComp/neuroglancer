@@ -46,8 +46,11 @@ import {
   propertyTypeDataType,
 } from "#src/annotation/index.js";
 import {
+  DEFAULT_MIN_SAMPLES,
   DEFAULT_POINT_FITTER,
+  DEFAULT_RELATIVE_THRESHOLD,
   getPointFitterNames,
+  MAX_MIN_SAMPLES,
 } from "#src/annotation/point_fit.js";
 import {
   AnnotationLayer,
@@ -110,7 +113,12 @@ import { removeChildren } from "#src/util/dom.js";
 import { Endianness, ENDIANNESS } from "#src/util/endian.js";
 import type { ValueOrError } from "#src/util/error.js";
 import { vec3, vec4 } from "#src/util/geom.js";
-import { parseUint64, verifyInt, verifyString } from "#src/util/json.js";
+import {
+  parseUint64,
+  verifyFloat01,
+  verifyInt,
+  verifyString,
+} from "#src/util/json.js";
 import type { ActionEvent } from "#src/util/keyboard_bindings.js";
 import {
   EventActionMap,
@@ -1923,6 +1931,9 @@ const ANNOTATION_COLOR_JSON_KEY = "annotationColor";
 const ANNOTATION_FIT_RADIUS_JSON_KEY = "annotationFitRadius";
 const ANNOTATION_FIT_METHOD_JSON_KEY = "annotationFitMethod";
 const ANNOTATION_FIT_INVERT_JSON_KEY = "annotationFitInvert";
+const ANNOTATION_FIT_MIN_SAMPLES_JSON_KEY = "annotationFitMinSamples";
+const ANNOTATION_FIT_RELATIVE_THRESHOLD_JSON_KEY =
+  "annotationFitRelativeThreshold";
 
 function verifyFitRadius(obj: any): number {
   const value = verifyInt(obj);
@@ -1940,6 +1951,16 @@ function verifyFitMethod(obj: any): string {
   if (!names.includes(value)) {
     throw new Error(
       `Expected one of ${JSON.stringify(names)}, received: ${JSON.stringify(value)}.`,
+    );
+  }
+  return value;
+}
+
+function verifyMinSamples(obj: any): number {
+  const value = verifyInt(obj);
+  if (value < 1 || value > MAX_MIN_SAMPLES) {
+    throw new Error(
+      `Expected integer in [1, ${MAX_MIN_SAMPLES}], received: ${value}.`,
     );
   }
   return value;
@@ -1984,6 +2005,29 @@ const ANNOTATION_FIT_LAYER_CONTROLS: Record<
     toolJson: ANNOTATION_FIT_INVERT_JSON_KEY,
     ...checkboxLayerControl((layer) => layer.annotationFit.invert),
   },
+  [ANNOTATION_FIT_RELATIVE_THRESHOLD_JSON_KEY]: {
+    label: "Fit threshold",
+    title:
+      "Fraction of the peak height, above the background, that a sample must reach to be " +
+      "included in the fit. Raise it to confine the fit to a tighter core around the peak; " +
+      "lower it to let a wider skirt of the feature contribute.",
+    toolJson: ANNOTATION_FIT_RELATIVE_THRESHOLD_JSON_KEY,
+    ...rangeLayerControl((layer) => ({
+      value: layer.annotationFit.relativeThreshold,
+    })),
+  },
+  [ANNOTATION_FIT_MIN_SAMPLES_JSON_KEY]: {
+    label: "Fit min samples",
+    title:
+      "Minimum number of above-threshold samples required before a fit is attempted. Raise it " +
+      "to reject a lone hot pixel or a couple of them, which have no spatial extent to fit a " +
+      "Gaussian to.",
+    toolJson: ANNOTATION_FIT_MIN_SAMPLES_JSON_KEY,
+    ...rangeLayerControl((layer) => ({
+      value: layer.annotationFit.minSamples,
+      options: { min: 1, max: MAX_MIN_SAMPLES, step: 1 },
+    })),
+  },
 };
 export function UserLayerWithAnnotationsMixin<
   TBase extends { new (...args: any[]): UserLayer },
@@ -2005,6 +2049,14 @@ export function UserLayerWithAnnotationsMixin<
       radius: new TrackableValue<number>(DEFAULT_FIT_RADIUS, verifyFitRadius),
       method: new TrackableValue<string>(DEFAULT_POINT_FITTER, verifyFitMethod),
       invert: new TrackableBoolean(false),
+      relativeThreshold: new TrackableValue<number>(
+        DEFAULT_RELATIVE_THRESHOLD,
+        verifyFloat01,
+      ),
+      minSamples: new TrackableValue<number>(
+        DEFAULT_MIN_SAMPLES,
+        verifyMinSamples,
+      ),
     };
     static supportColorPickerInAnnotationTab = true;
 
@@ -2090,6 +2142,12 @@ export function UserLayerWithAnnotationsMixin<
       );
       this.annotationFit.invert.restoreState(
         specification[ANNOTATION_FIT_INVERT_JSON_KEY],
+      );
+      this.annotationFit.relativeThreshold.restoreState(
+        specification[ANNOTATION_FIT_RELATIVE_THRESHOLD_JSON_KEY],
+      );
+      this.annotationFit.minSamples.restoreState(
+        specification[ANNOTATION_FIT_MIN_SAMPLES_JSON_KEY],
       );
     }
 
@@ -2786,6 +2844,10 @@ export function UserLayerWithAnnotationsMixin<
       x[ANNOTATION_FIT_RADIUS_JSON_KEY] = this.annotationFit.radius.toJSON();
       x[ANNOTATION_FIT_METHOD_JSON_KEY] = this.annotationFit.method.toJSON();
       x[ANNOTATION_FIT_INVERT_JSON_KEY] = this.annotationFit.invert.toJSON();
+      x[ANNOTATION_FIT_RELATIVE_THRESHOLD_JSON_KEY] =
+        this.annotationFit.relativeThreshold.toJSON();
+      x[ANNOTATION_FIT_MIN_SAMPLES_JSON_KEY] =
+        this.annotationFit.minSamples.toJSON();
       return x;
     }
   }
