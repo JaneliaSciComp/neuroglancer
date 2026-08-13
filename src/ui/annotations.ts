@@ -60,7 +60,6 @@ import type { CoordinateSpace } from "#src/coordinate_transform.js";
 import type { MouseSelectionState, UserLayer } from "#src/layer/index.js";
 import type { LoadedDataSubsource } from "#src/layer/layer_data_source.js";
 import type { ChunkTransformParameters } from "#src/render_coordinate_transform.js";
-import { getChunkPositionFromCombinedGlobalLocalPositions } from "#src/render_coordinate_transform.js";
 import {
   RenderScaleHistogram,
   trackableRenderScaleTarget,
@@ -87,7 +86,7 @@ import {
 } from "#src/trackable_value.js";
 import {
   DEFAULT_FIT_RADIUS,
-  fitGlobalPosition,
+  getGlobalPositionInAnnotationCoordinates,
   MAX_FIT_RADIUS,
 } from "#src/ui/annotation_fit.js";
 import type { AnnotationColorKey } from "#src/ui/annotation_properties.js";
@@ -1127,14 +1126,6 @@ function getSelectedAssociatedSegments(
 abstract class PlaceAnnotationTool extends LegacyTool {
   declare layer: UserLayerWithAnnotations;
 
-  /**
-   * Whether "snap to fit" applies to this shape.  True only for shapes whose vertices are meant to
-   * sit on an image feature; a bounding box corner or an ellipsoid radius is an extent, not a
-   * feature center, so fitting one would corrupt the geometry.
-   */
-  protected supportsFit = false;
-  private suppressFit = false;
-
   constructor(layer: UserLayerWithAnnotations, options: any) {
     super(layer);
     options;
@@ -1150,42 +1141,19 @@ abstract class PlaceAnnotationTool extends LegacyTool {
   /**
    * The position to place a vertex at, in the coordinate space of `annotationLayer`.
    *
-   * This is the single point through which every placement tool obtains a position, and therefore
-   * the only place "snap to fit" has to hook into.
+   * This is the single point through which every placement tool obtains a position.  Placement
+   * always uses the raw cursor position; snapping a placed (or already-existing) vertex to the
+   * fitted center of the surrounding image intensity is a separate, explicit action -- see
+   * `"fit-annotation-vertex"` in `#src/rendered_data_panel.js`.
    */
   protected getMousePosition(
     mouseState: MouseSelectionState,
     annotationLayer: AnnotationLayerState,
   ): Float32Array | undefined {
-    const { annotationFit } = this.layer;
-    const globalPosition =
-      this.supportsFit && !this.suppressFit && annotationFit.enabled.value
-        ? fitGlobalPosition(this.layer, mouseState, {
-            radius: annotationFit.radius.value,
-            method: annotationFit.method.value,
-            invert: annotationFit.invert.value,
-          })
-        : mouseState.unsnappedPosition;
     return getGlobalPositionInAnnotationCoordinates(
-      globalPosition,
+      mouseState.unsnappedPosition,
       annotationLayer,
     );
-  }
-
-  /**
-   * Runs `f` with fitting suppressed.
-   *
-   * Multi-step tools recompute the in-progress annotation on every mouse move, so the hover path
-   * must not fit: it would cost a full patch sample per frame and make the rubber-band preview
-   * jump from feature to feature.  Only the committing click fits.
-   */
-  protected withoutFit(f: () => void) {
-    this.suppressFit = true;
-    try {
-      f();
-    } finally {
-      this.suppressFit = false;
-    }
   }
 }
 
@@ -1196,8 +1164,6 @@ const ANNOTATE_ELLIPSOID_TOOL_ID = "annotateSphere";
 const ANNOTATE_POLYLINE_TOOL_ID = "annotatePolyline";
 
 export class PlacePointTool extends PlaceAnnotationTool {
-  protected override supportsFit = true;
-
   trigger(mouseState: MouseSelectionState) {
     const { annotationLayer } = this;
     if (annotationLayer === undefined) {
@@ -1233,34 +1199,6 @@ export class PlacePointTool extends PlaceAnnotationTool {
   toJSON() {
     return ANNOTATE_POINT_TOOL_ID;
   }
-}
-
-/**
- * Converts `globalPosition`, in the global coordinate space, to the coordinate space in which
- * annotations of `annotationLayer` are expressed.  Returns `undefined` if the position lies
- * outside the annotation layer's clip bounds.
- */
-function getGlobalPositionInAnnotationCoordinates(
-  globalPosition: Float32Array,
-  annotationLayer: AnnotationLayerState,
-): Float32Array | undefined {
-  const chunkTransform = annotationLayer.chunkTransform.value;
-  if (chunkTransform.error !== undefined) return undefined;
-  const chunkPosition = new Float32Array(
-    chunkTransform.modelTransform.unpaddedRank,
-  );
-  if (
-    !getChunkPositionFromCombinedGlobalLocalPositions(
-      chunkPosition,
-      globalPosition,
-      annotationLayer.localPosition.value,
-      chunkTransform.layerRank,
-      chunkTransform.combinedGlobalLocalToChunkTransform,
-    )
-  ) {
-    return undefined;
-  }
-  return chunkPosition;
 }
 
 abstract class MultiStepAnnotationTool extends PlaceAnnotationTool {
@@ -1323,11 +1261,7 @@ abstract class MultiStepAnnotationTool extends PlaceAnnotationTool {
           /*commit=*/ false,
         );
         this.layer.selectAnnotation(annotationLayer, reference.id, true);
-        // Hover only: the committing click calls `updateNextPoint` directly, so wrapping the
-        // subscription is what confines "snap to fit" to clicks.
-        const mouseDisposer = mouseState.changed.add(() =>
-          this.withoutFit(updateNextPoint),
-        );
+        const mouseDisposer = mouseState.changed.add(() => updateNextPoint());
         const disposer = () => {
           mouseDisposer();
           reference.dispose();
@@ -1424,11 +1358,7 @@ abstract class TwoStepAnnotationTool extends PlaceAnnotationTool {
           /*commit=*/ false,
         );
         this.layer.selectAnnotation(annotationLayer, reference.id, true);
-        // Hover only: the committing click calls `updatePointB` directly, so wrapping the
-        // subscription is what confines "snap to fit" to clicks.
-        const mouseDisposer = mouseState.changed.add(() =>
-          this.withoutFit(updatePointB),
-        );
+        const mouseDisposer = mouseState.changed.add(() => updatePointB());
         const disposer = () => {
           mouseDisposer();
           reference.dispose();
@@ -1528,7 +1458,6 @@ PlaceBoundingBoxTool.prototype.annotationType =
 
 export class PlaceLineTool extends PlaceTwoCornerAnnotationTool {
   getBaseSegment = false;
-  protected override supportsFit = true;
 
   get description() {
     return "annotate line";
@@ -1584,9 +1513,6 @@ PlaceLineTool.prototype.annotationType = AnnotationType.LINE;
 
 class PlacePolylineTool extends MultiStepAnnotationTool {
   getBaseSegment = false;
-  // ponytail: with fitting on, the double-click-to-finish test compares fitted positions, so two
-  // clicks on the same feature end the polyline even if the pixels differ.
-  protected override supportsFit = true;
 
   private storedRelationships: BigUint64Array[] | undefined;
 
@@ -1994,7 +1920,6 @@ function makeRelatedSegmentList(
 }
 
 const ANNOTATION_COLOR_JSON_KEY = "annotationColor";
-const ANNOTATION_FIT_ENABLED_JSON_KEY = "annotationFitEnabled";
 const ANNOTATION_FIT_RADIUS_JSON_KEY = "annotationFitRadius";
 const ANNOTATION_FIT_METHOD_JSON_KEY = "annotationFitMethod";
 const ANNOTATION_FIT_INVERT_JSON_KEY = "annotationFitInvert";
@@ -2021,32 +1946,23 @@ function verifyFitMethod(obj: any): string {
 }
 
 /**
- * "Snap to fit" controls, shown beneath the annotation toolbox.  The radius and method rows are
- * only shown while snapping is enabled.
+ * Controls for how Alt+Shift+Click fits a point, line endpoint or polyline vertex to the center
+ * of the surrounding image intensity, shown beneath the annotation toolbox.
  */
 const ANNOTATION_FIT_LAYER_CONTROLS: Record<
   string,
   LayerControlDefinition<UserLayerWithAnnotations>
 > = {
-  [ANNOTATION_FIT_ENABLED_JSON_KEY]: {
-    label: "Snap to fit",
-    title:
-      "Move each placed point, line endpoint and polyline vertex to the fitted center of the " +
-      "surrounding image intensity, instead of leaving it where the cursor was.",
-    toolJson: ANNOTATION_FIT_ENABLED_JSON_KEY,
-    ...checkboxLayerControl((layer) => layer.annotationFit.enabled),
-  },
   [ANNOTATION_FIT_RADIUS_JSON_KEY]: {
     label: "Fit radius",
     title:
-      "Half-width, in voxels, of the image patch the fit is computed over. Raise it for larger " +
-      "features, or when clicking further from the center than the current radius reaches.",
+      "Half-width, in voxels, of the image patch that Alt+Shift+Click fits over. Raise it for " +
+      "larger features, or when clicking further from the center than the current radius reaches.",
     toolJson: ANNOTATION_FIT_RADIUS_JSON_KEY,
     ...rangeLayerControl((layer) => ({
       value: layer.annotationFit.radius,
       options: { min: 1, max: MAX_FIT_RADIUS, step: 1 },
     })),
-    isValid: (layer) => layer.annotationFit.enabled,
   },
   [ANNOTATION_FIT_METHOD_JSON_KEY]: {
     label: "Fit method",
@@ -2060,7 +1976,6 @@ const ANNOTATION_FIT_LAYER_CONTROLS: Record<
         label: name,
       })),
     })),
-    isValid: (layer) => layer.annotationFit.enabled,
   },
   [ANNOTATION_FIT_INVERT_JSON_KEY]: {
     label: "Dark feature",
@@ -2068,7 +1983,6 @@ const ANNOTATION_FIT_LAYER_CONTROLS: Record<
       "Fit a dark blob on a bright background, rather than a bright blob on a dark background.",
     toolJson: ANNOTATION_FIT_INVERT_JSON_KEY,
     ...checkboxLayerControl((layer) => layer.annotationFit.invert),
-    isValid: (layer) => layer.annotationFit.enabled,
   },
 };
 export function UserLayerWithAnnotationsMixin<
@@ -2083,11 +1997,11 @@ export function UserLayerWithAnnotationsMixin<
     annotationProjectionRenderScaleTarget = trackableRenderScaleTarget(8);
     allowDependentAnnotationViewUpdate = new TrackableBoolean(true);
     /**
-     * "Snap to fit" settings.  Held on the layer rather than on a tool so that the point, line and
-     * polyline tools all share one set, and so that the settings survive switching between them.
+     * Settings for the Alt+Shift+Click "fit vertex" gesture (`#src/rendered_data_panel.js`).
+     * Held on the layer, rather than on a tool, so that they apply no matter which tool (if any)
+     * is active, and so the settings survive switching between tools.
      */
     annotationFit = {
-      enabled: new TrackableBoolean(false),
       radius: new TrackableValue<number>(DEFAULT_FIT_RADIUS, verifyFitRadius),
       method: new TrackableValue<string>(DEFAULT_POINT_FITTER, verifyFitMethod),
       invert: new TrackableBoolean(false),
@@ -2167,9 +2081,6 @@ export function UserLayerWithAnnotationsMixin<
       super.restoreState(specification);
       this.annotationDisplayState.color.restoreState(
         specification[ANNOTATION_COLOR_JSON_KEY],
-      );
-      this.annotationFit.enabled.restoreState(
-        specification[ANNOTATION_FIT_ENABLED_JSON_KEY],
       );
       this.annotationFit.radius.restoreState(
         specification[ANNOTATION_FIT_RADIUS_JSON_KEY],
@@ -2872,7 +2783,6 @@ export function UserLayerWithAnnotationsMixin<
       x[ANNOTATION_COLOR_JSON_KEY] = this.annotationDisplayState.color.toJSON();
       // `TrackableValue.toJSON` returns `undefined` at the default, so defaults stay out of the
       // serialized state.
-      x[ANNOTATION_FIT_ENABLED_JSON_KEY] = this.annotationFit.enabled.toJSON();
       x[ANNOTATION_FIT_RADIUS_JSON_KEY] = this.annotationFit.radius.toJSON();
       x[ANNOTATION_FIT_METHOD_JSON_KEY] = this.annotationFit.method.toJSON();
       x[ANNOTATION_FIT_INVERT_JSON_KEY] = this.annotationFit.invert.toJSON();

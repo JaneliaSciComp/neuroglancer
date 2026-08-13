@@ -117,6 +117,7 @@ export function getDefaultRenderedDataPanelBindings() {
         "at:control+mousedown0": "annotate",
         "at:mousedown2": "move-to-mouse-position",
         "at:alt+mousedown0": "move-annotation",
+        "at:alt+shift+mousedown0": "fit-annotation-vertex",
         "at:control+alt+mousedown2": "delete-annotation",
         enter: "finish-annotation",
         backspace: "undo-annotation-step",

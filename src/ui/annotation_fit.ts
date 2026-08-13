@@ -17,17 +17,65 @@
 
 /**
  * Refines a clicked position to the fitted center of the surrounding image intensity, so that a
- * placed annotation vertex lands on a feature rather than wherever the cursor happened to be.
+ * placed or dragged annotation vertex lands on a feature rather than wherever the cursor happened
+ * to be.
  *
- * This module deliberately does not import `#src/ui/annotations.js`, which imports it: the caller
- * converts the returned global position into annotation coordinates.
+ * This module deliberately does not import `#src/ui/annotations.js`, which imports it.
  */
 
+import type { AnnotationLayerState } from "#src/annotation/annotation_layer_state.js";
+import type { Annotation } from "#src/annotation/index.js";
+import { AnnotationType } from "#src/annotation/index.js";
 import type { PointFitter, VoxelPatch } from "#src/annotation/point_fit.js";
 import { getPointFitter, normalizePatch } from "#src/annotation/point_fit.js";
 import type { MouseSelectionState, UserLayer } from "#src/layer/index.js";
+import { getChunkPositionFromCombinedGlobalLocalPositions } from "#src/render_coordinate_transform.js";
 import { ImageRenderLayer } from "#src/sliceview/volume/image_renderlayer.js";
 import { StatusMessage } from "#src/status.js";
+
+/**
+ * Whether `ann` has a vertex that can meaningfully be moved to a fitted feature center. A
+ * bounding box corner or an ellipsoid radius is an extent, not a feature center, so fitting one
+ * would corrupt the geometry.
+ */
+export function canFitAnnotation(ann: Annotation): boolean {
+  switch (ann.type) {
+    case AnnotationType.POINT:
+    case AnnotationType.LINE:
+    case AnnotationType.POLYLINE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Converts `globalPosition`, in the global coordinate space, to the coordinate space in which
+ * annotations of `annotationLayer` are expressed.  Returns `undefined` if the position lies
+ * outside the annotation layer's clip bounds.
+ */
+export function getGlobalPositionInAnnotationCoordinates(
+  globalPosition: Float32Array,
+  annotationLayer: AnnotationLayerState,
+): Float32Array | undefined {
+  const chunkTransform = annotationLayer.chunkTransform.value;
+  if (chunkTransform.error !== undefined) return undefined;
+  const chunkPosition = new Float32Array(
+    chunkTransform.modelTransform.unpaddedRank,
+  );
+  if (
+    !getChunkPositionFromCombinedGlobalLocalPositions(
+      chunkPosition,
+      globalPosition,
+      annotationLayer.localPosition.value,
+      chunkTransform.layerRank,
+      chunkTransform.combinedGlobalLocalToChunkTransform,
+    )
+  ) {
+    return undefined;
+  }
+  return chunkPosition;
+}
 
 export const DEFAULT_FIT_RADIUS = 5;
 export const MAX_FIT_RADIUS = 32;
