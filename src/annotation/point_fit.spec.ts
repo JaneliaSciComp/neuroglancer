@@ -19,8 +19,8 @@ import { describe, expect, it } from "vitest";
 import type { VoxelPatch } from "#src/annotation/point_fit.js";
 import {
   DEFAULT_POINT_FITTER,
-  centroidFitter,
   gaussianLogFitter,
+  gaussianNonlinearFitter,
   getPointFitter,
   normalizePatch,
 } from "#src/annotation/point_fit.js";
@@ -108,17 +108,15 @@ describe("gaussianLogFitter", () => {
     }
   });
 
-  it("beats the centroid when the blob is off-center in the patch", () => {
-    // The window truncates the blob's tails asymmetrically, which biases a centroid but not a fit
-    // restricted to the peak core.
+  it("is unbiased when the blob is off-center in the patch", () => {
+    // The window truncates the blob's tails asymmetrically, which biases a plain intensity
+    // centroid but not a fit restricted to the peak core.
     const center: [number, number, number] = [3.1, 7.6, 5.0];
     const patch = makeGaussianPatch(center, 1.8);
     const fitted = gaussianLogFitter(patch)!;
-    const centroid = centroidFitter(patch)!;
     const error = (p: number[]) =>
       Math.hypot(p[0] - center[0], p[1] - center[1], p[2] - center[2]);
     expect(error(fitted)).toBeLessThan(1e-6);
-    expect(error(fitted)).toBeLessThan(error(centroid));
   });
 
   it("is robust to quantized, noisy samples", () => {
@@ -182,17 +180,82 @@ describe("gaussianLogFitter", () => {
   });
 });
 
-describe("centroidFitter", () => {
+describe("gaussianNonlinearFitter", () => {
   it("is registered under its own name", () => {
-    expect(getPointFitter("centroid")).toBe(centroidFitter);
+    expect(getPointFitter("gaussianNonlinear")).toBe(gaussianNonlinearFitter);
   });
 
-  it("recovers a sub-voxel Gaussian center", () => {
+  it("recovers a sub-voxel center essentially exactly on a clean Gaussian", () => {
     const center: [number, number, number] = [5.3, 4.7, 6.1];
-    const result = centroidFitter(makeGaussianPatch(center, 1.5));
+    const result = gaussianNonlinearFitter(makeGaussianPatch(center, 1.5));
     expect(result).toBeDefined();
     for (let i = 0; i < 3; ++i) {
-      expect(Math.abs(result![i] - center[i])).toBeLessThan(0.15);
+      expect(Math.abs(result![i] - center[i])).toBeLessThan(1e-6);
+    }
+  });
+
+  it("handles an anisotropic Gaussian", () => {
+    const center: [number, number, number] = [4.4, 5.9, 5.2];
+    const result = gaussianNonlinearFitter(
+      makeAnisotropicGaussianPatch(center, [1.2, 2.4, 1.8]),
+    );
+    expect(result).toBeDefined();
+    for (let i = 0; i < 3; ++i) {
+      expect(Math.abs(result![i] - center[i])).toBeLessThan(1e-6);
+    }
+  });
+
+  it("is unbiased when the blob is off-center in the patch", () => {
+    const center: [number, number, number] = [3.1, 7.6, 5.0];
+    const result = gaussianNonlinearFitter(makeGaussianPatch(center, 1.8));
+    expect(result).toBeDefined();
+    for (let i = 0; i < 3; ++i) {
+      expect(Math.abs(result![i] - center[i])).toBeLessThan(1e-6);
+    }
+  });
+
+  it("recovers a sub-voxel center on a Gaussian at arbitrary float scale", () => {
+    const center: [number, number, number] = [5.3, 4.7, 6.1];
+    const patch = makeGaussianPatch(center, 1.5, {
+      background: 2e-7,
+      amplitude: 3.4e-6,
+    });
+    normalizePatch(patch);
+    const result = gaussianNonlinearFitter(patch);
+    expect(result).toBeDefined();
+    for (let i = 0; i < 3; ++i) {
+      expect(Math.abs(result![i] - center[i])).toBeLessThan(1e-6);
+    }
+  });
+
+  it("recovers a dark blob's center once normalizePatch inverts it", () => {
+    const center: [number, number, number] = [5.3, 4.7, 6.1];
+    const patch = makeGaussianPatch(center, 1.5, {
+      background: 220,
+      amplitude: -200,
+    });
+    normalizePatch(patch, /* invert= */ true);
+    const result = gaussianNonlinearFitter(patch);
+    expect(result).toBeDefined();
+    for (let i = 0; i < 3; ++i) {
+      expect(Math.abs(result![i] - center[i])).toBeLessThan(1e-6);
+    }
+  });
+
+  it("is more accurate than the log fit on noisy, quantized samples", () => {
+    // Fitting the raw intensity directly, rather than its log, avoids amplifying the noise of
+    // dim samples, so this should track the true center noticeably closer than gaussianLogFitter
+    // does on the same patch (see the corresponding test above, tolerance 0.1).
+    const center: [number, number, number] = [5.4, 5.15, 4.85];
+    const patch = makeGaussianPatch(center, 2);
+    for (let i = 0; i < patch.data.length; ++i) {
+      const jitter = 4 * Math.sin(i * 12.9898) * Math.cos(i * 78.233);
+      patch.data[i] = Math.round(patch.data[i] + jitter);
+    }
+    const result = gaussianNonlinearFitter(patch);
+    expect(result).toBeDefined();
+    for (let i = 0; i < 3; ++i) {
+      expect(Math.abs(result![i] - center[i])).toBeLessThan(0.01);
     }
   });
 
@@ -207,21 +270,42 @@ describe("centroidFitter", () => {
         }
       }
     }
-    const result = centroidFitter(patch);
+    const result = gaussianNonlinearFitter(patch);
     expect(result).toBeDefined();
     for (let i = 0; i < 3; ++i) {
-      expect(Math.abs(result![i] - center[i])).toBeLessThan(0.15);
+      expect(Math.abs(result![i] - center[i])).toBeLessThan(1e-6);
     }
+  });
+
+  it("rejects a trough rather than reporting its center", () => {
+    const patch = makeGaussianPatch([5, 5, 5], 2, {
+      background: 220,
+      amplitude: -200,
+    });
+    expect(gaussianNonlinearFitter(patch)).toBeUndefined();
   });
 
   it("returns undefined for a uniform patch", () => {
     const data = new Float32Array(SIZE * SIZE * SIZE).fill(42);
-    expect(centroidFitter({ data, size: [SIZE, SIZE, SIZE] })).toBeUndefined();
+    expect(
+      gaussianNonlinearFitter({ data, size: [SIZE, SIZE, SIZE] }),
+    ).toBeUndefined();
   });
 
   it("returns undefined when every sample is missing", () => {
     const data = new Float32Array(SIZE * SIZE * SIZE).fill(Number.NaN);
-    expect(centroidFitter({ data, size: [SIZE, SIZE, SIZE] })).toBeUndefined();
+    expect(
+      gaussianNonlinearFitter({ data, size: [SIZE, SIZE, SIZE] }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when too few samples clear the threshold", () => {
+    // A single bright voxel has no spatial extent to fit a Gaussian to.
+    const data = new Float32Array(SIZE * SIZE * SIZE).fill(10);
+    data[5 + SIZE * (5 + SIZE * 5)] = 250;
+    expect(
+      gaussianNonlinearFitter({ data, size: [SIZE, SIZE, SIZE] }),
+    ).toBeUndefined();
   });
 });
 

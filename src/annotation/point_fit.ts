@@ -213,45 +213,236 @@ export function gaussianLogFitter(
 }
 
 /**
- * Background-subtracted intensity-weighted center of mass.  The background is taken to be the
- * minimum sample in the patch, so a patch containing a single bright blob on a flat background
- * yields that blob's centroid, which coincides with the center of a symmetric Gaussian.
- *
- * Cheaper and more robust than `gaussianLogFitter` on noisy or non-Gaussian blobs, but biased
- * whenever the patch is not roughly centered on the blob, since the window then truncates the
- * tails asymmetrically.  Kept as a fallback; select it with the tool's `fitter` option.
+ * Number of parameters in the full nonlinear Gaussian model: background, amplitude, and an
+ * independent center and standard deviation per axis -- `[b, A, cx, cy, cz, sx, sy, sz]`.
  */
-export function centroidFitter(
-  patch: VoxelPatch,
-): [number, number, number] | undefined {
-  const { data, size } = patch;
-  let background = Number.POSITIVE_INFINITY;
-  for (const v of data) {
-    // Comparison is false for NaN, so missing samples are skipped.
-    if (v < background) background = v;
+const NUM_PARAMS_NL = 8;
+
+/** Levenberg-Marquardt iteration cap; the loop ordinarily converges in well under this. */
+const MAX_ITERATIONS = 50;
+
+/** Standard deviations are kept from collapsing to (or crossing) zero, which would be singular. */
+const MIN_SIGMA = 0.25;
+
+/**
+ * Evaluates the Gaussian model and its residual and Jacobian contribution at one sample, and
+ * accumulates them into the normal equations `JTJ` and `JTr` and the running sum-of-squares cost.
+ *
+ * Unlike `gaussianLogFitter`, this fits the intensity directly rather than its log, so no
+ * `height^2` reweighting is needed to correct a log-transform bias -- ordinary least squares on
+ * the raw residual is already the right objective.
+ */
+function accumulateGaussianResidual(
+  p: Float64Array,
+  x: number,
+  y: number,
+  z: number,
+  value: number,
+  JTJ: Float64Array,
+  JTr: Float64Array,
+  row: Float64Array,
+): number {
+  const [background, amplitude, cx, cy, cz, sx, sy, sz] = p;
+  const u = x - cx;
+  const v = y - cy;
+  const w = z - cz;
+  const g = Math.exp(
+    -(
+      (u * u) / (2 * sx * sx) +
+      (v * v) / (2 * sy * sy) +
+      (w * w) / (2 * sz * sz)
+    ),
+  );
+  const model = background + amplitude * g;
+  const residual = value - model;
+  row[0] = 1;
+  row[1] = g;
+  row[2] = (amplitude * g * u) / (sx * sx);
+  row[3] = (amplitude * g * v) / (sy * sy);
+  row[4] = (amplitude * g * w) / (sz * sz);
+  row[5] = (amplitude * g * u * u) / (sx * sx * sx);
+  row[6] = (amplitude * g * v * v) / (sy * sy * sy);
+  row[7] = (amplitude * g * w * w) / (sz * sz * sz);
+  for (let a = 0; a < NUM_PARAMS_NL; ++a) {
+    JTr[a] += row[a] * residual;
+    for (let b = 0; b < NUM_PARAMS_NL; ++b) {
+      JTJ[a * NUM_PARAMS_NL + b] += row[a] * row[b];
+    }
   }
-  if (!Number.isFinite(background)) return undefined;
-  let totalWeight = 0;
-  let sumX = 0;
-  let sumY = 0;
-  let sumZ = 0;
+  return residual * residual;
+}
+
+/**
+ * Accumulates the Gauss-Newton normal equations and sum-of-squares cost of the Gaussian model
+ * `p` against every non-`NaN` sample in the patch.  Returns `undefined` if fewer than
+ * `NUM_PARAMS_NL + 1` samples are usable, which leaves the system underdetermined.
+ */
+function evaluateModel(
+  p: Float64Array,
+  data: Float32Array,
+  size: readonly [number, number, number],
+): { JTJ: Float64Array; JTr: Float64Array; cost: number } | undefined {
+  const JTJ = new Float64Array(NUM_PARAMS_NL * NUM_PARAMS_NL);
+  const JTr = new Float64Array(NUM_PARAMS_NL);
+  const row = new Float64Array(NUM_PARAMS_NL);
+  let cost = 0;
+  let count = 0;
   let i = 0;
   for (let z = 0; z < size[2]; ++z) {
     for (let y = 0; y < size[1]; ++y) {
       for (let x = 0; x < size[0]; ++x, ++i) {
-        const weight = data[i] - background;
-        // False for NaN and for zero-weight samples.
-        if (!(weight > 0)) continue;
-        totalWeight += weight;
-        sumX += weight * x;
-        sumY += weight * y;
-        sumZ += weight * z;
+        const value = data[i];
+        if (Number.isNaN(value)) continue;
+        cost += accumulateGaussianResidual(p, x, y, z, value, JTJ, JTr, row);
+        ++count;
       }
     }
   }
-  if (totalWeight === 0) return undefined;
-  return [sumX / totalWeight, sumY / totalWeight, sumZ / totalWeight];
+  if (count < NUM_PARAMS_NL + 1) return undefined;
+  return { JTJ, JTr, cost };
+}
+
+/**
+ * Fits an axis-aligned 3-d Gaussian, `background + amplitude * exp(-sum((x - center)^2 /
+ * (2*sigma^2)))`, by nonlinear least squares (Levenberg-Marquardt) against the raw patch
+ * intensity -- as opposed to `gaussianLogFitter`'s closed-form fit of the log-transformed
+ * intensity, which only approximates the same objective and needs a variance correction to do so.
+ *
+ * The background, amplitude, and per-axis standard deviation are fit alongside the center, rather
+ * than derived from the patch as `gaussianLogFitter` does, so the result isn't sensitive to a
+ * skewed background estimate. The solve is seeded from the weighted mean and variance of the
+ * above-threshold samples -- a cheap moment estimate that gets Levenberg-Marquardt close enough to
+ * converge in a handful of iterations.
+ *
+ * Returns `undefined` if the initial estimate is degenerate, if too few samples are usable, if the
+ * solve never improves on its seed, or if the converged fit fell to a trough or drifted outside
+ * the sampled patch.
+ */
+export function gaussianNonlinearFitter(
+  patch: VoxelPatch,
+  options: { relativeThreshold?: number } = {},
+): [number, number, number] | undefined {
+  const { relativeThreshold = DEFAULT_RELATIVE_THRESHOLD } = options;
+  const { data, size } = patch;
+  let background = Number.POSITIVE_INFINITY;
+  let peak = Number.NEGATIVE_INFINITY;
+  for (const v of data) {
+    if (v < background) background = v;
+    if (v > peak) peak = v;
+  }
+  if (!Number.isFinite(background) || !Number.isFinite(peak)) return undefined;
+  const amplitude = peak - background;
+  if (!(amplitude > 0)) return undefined;
+  const threshold = relativeThreshold * amplitude;
+
+  let totalWeight = 0;
+  let sumX = 0;
+  let sumY = 0;
+  let sumZ = 0;
+  let aboveThreshold = 0;
+  let i = 0;
+  for (let z = 0; z < size[2]; ++z) {
+    for (let y = 0; y < size[1]; ++y) {
+      for (let x = 0; x < size[0]; ++x, ++i) {
+        const height = data[i] - background;
+        if (!(height > threshold)) continue;
+        totalWeight += height;
+        sumX += height * x;
+        sumY += height * y;
+        sumZ += height * z;
+        ++aboveThreshold;
+      }
+    }
+  }
+  // A lone hot pixel, or a couple of them, has no spatial extent to fit a Gaussian to: the solve
+  // would just shrink sigma to wrap it and report a spuriously confident center.
+  if (aboveThreshold < MIN_SAMPLES) return undefined;
+  const meanX = sumX / totalWeight;
+  const meanY = sumY / totalWeight;
+  const meanZ = sumZ / totalWeight;
+  let varX = 0;
+  let varY = 0;
+  let varZ = 0;
+  i = 0;
+  for (let z = 0; z < size[2]; ++z) {
+    for (let y = 0; y < size[1]; ++y) {
+      for (let x = 0; x < size[0]; ++x, ++i) {
+        const height = data[i] - background;
+        if (!(height > threshold)) continue;
+        varX += height * (x - meanX) ** 2;
+        varY += height * (y - meanY) ** 2;
+        varZ += height * (z - meanZ) ** 2;
+      }
+    }
+  }
+
+  let p = Float64Array.from([
+    background,
+    amplitude,
+    meanX,
+    meanY,
+    meanZ,
+    Math.max(Math.sqrt(varX / totalWeight), MIN_SIGMA),
+    Math.max(Math.sqrt(varY / totalWeight), MIN_SIGMA),
+    Math.max(Math.sqrt(varZ / totalWeight), MIN_SIGMA),
+  ]);
+  let state = evaluateModel(p, data, size);
+  if (state === undefined) return undefined;
+
+  // Levenberg-Marquardt: solve `(JTJ + lambda * diag(JTJ)) * delta = JTr` each iteration: large
+  // when a step just made things worse (fall back toward gradient descent, which can't diverge),
+  // small once steps are consistently improving (fall forward to the faster Gauss-Newton step).
+  let lambda = 1e-3;
+  for (let iter = 0; iter < MAX_ITERATIONS; ++iter) {
+    const { JTJ, JTr, cost } = state;
+    const damped = JTJ.slice();
+    for (let a = 0; a < NUM_PARAMS_NL; ++a) {
+      damped[a * NUM_PARAMS_NL + a] *= 1 + lambda;
+    }
+    const determinant = matrix.inverseInplace(damped, NUM_PARAMS_NL, NUM_PARAMS_NL);
+    if (!Number.isFinite(determinant) || determinant === 0) return undefined;
+    const delta = new Float64Array(NUM_PARAMS_NL);
+    matrix.multiply(
+      delta,
+      NUM_PARAMS_NL,
+      damped,
+      NUM_PARAMS_NL,
+      JTr,
+      NUM_PARAMS_NL,
+      NUM_PARAMS_NL,
+      NUM_PARAMS_NL,
+      1,
+    );
+    const candidate = Float64Array.from(p);
+    for (let a = 0; a < NUM_PARAMS_NL; ++a) candidate[a] += delta[a];
+    // Sigma is squared throughout the model, so its sign is unobservable; keep it positive and
+    // away from zero rather than let the solve wander into a singular Jacobian.
+    for (const a of [5, 6, 7]) {
+      candidate[a] = Math.max(Math.abs(candidate[a]), MIN_SIGMA);
+    }
+
+    const candidateState = evaluateModel(candidate, data, size);
+    if (candidateState !== undefined && candidateState.cost < cost) {
+      const improved = (cost - candidateState.cost) / cost;
+      p = candidate;
+      state = candidateState;
+      lambda = Math.max(lambda / 3, 1e-8);
+      if (improved < 1e-9) break;
+    } else {
+      lambda *= 3;
+      if (lambda > 1e8) break;
+    }
+  }
+
+  // A negative amplitude means the solve slid toward a trough rather than a peak.
+  if (!(p[1] > 0)) return undefined;
+  const center: [number, number, number] = [p[2], p[3], p[4]];
+  for (let k = 0; k < 3; ++k) {
+    // Refuse to extrapolate a center outside the region that was actually sampled.
+    if (!(center[k] >= 0 && center[k] <= size[k] - 1)) return undefined;
+  }
+  return center;
 }
 
 registerPointFitter("gaussianLog", gaussianLogFitter);
-registerPointFitter("centroid", centroidFitter);
+registerPointFitter("gaussianNonlinear", gaussianNonlinearFitter);
