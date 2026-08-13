@@ -201,7 +201,13 @@ export function fitGlobalPosition(
     return clicked;
   }
   const { displayDimensions } = mouseState;
-  if (displayDimensions === undefined) return clicked;
+  if (displayDimensions === undefined) {
+    StatusMessage.showTemporaryMessage(
+      "Cannot snap to fit: no display dimensions for the cursor position. " +
+        "Placed at the clicked position.",
+    );
+    return clicked;
+  }
   const sampled = samplePatch(
     source.renderLayer,
     clicked,

@@ -339,4 +339,6 @@ registerAnnotationTypeRenderHandler<PolyLine>(AnnotationType.POLYLINE, {
 
     return oldAnnotation;
   },
+  isFullObjectPick: (partIndex) =>
+    getPartIndexInfo(partIndex).linePart === FULL_OBJECT_PICK_OFFSET,
 });

@@ -749,12 +749,22 @@ export abstract class RenderedDataPanel extends RenderedPanel {
       }
       const ref = annotationLayer.source.getReference(selectedAnnotationId);
       try {
-        const ann = <Annotation>ref.value;
-        if (!canFitAnnotation(ann)) return;
+        const ann = <Annotation | null>ref.value;
+        if (ann == null || !canFitAnnotation(ann)) return;
         // The settings that describe how to fit live on the owning layer (shared across all of
         // its tools), not on the picked `AnnotationLayerState` itself.
         const owningLayer = annotationLayer.dataSource.layer;
         if (!hasAnnotationFit(owningLayer)) return;
+        // Snapshot before `updateUnconditionally()` forces a fresh GPU pick, which can resolve to
+        // a different sub-part (e.g. a nearby vertex) than the one that triggered this action.
+        const pickedOffset = mouseState.pickedOffset;
+        const handler = getAnnotationTypeRenderHandler(ann.type);
+        if (handler.isFullObjectPick?.(pickedOffset)) {
+          StatusMessage.showTemporaryMessage(
+            "Cannot snap to fit: click directly on a vertex, not the body of the shape.",
+          );
+          return;
+        }
         if (!mouseState.updateUnconditionally()) return;
         const fitted = fitGlobalPosition(owningLayer, mouseState, {
           radius: owningLayer.annotationFit.radius.value,
@@ -768,11 +778,10 @@ export abstract class RenderedDataPanel extends RenderedPanel {
           annotationLayer,
         );
         if (newPoint === undefined) return;
-        const handler = getAnnotationTypeRenderHandler(ann.type);
         const newAnnotation = handler.updateViaRepresentativePoint(
           ann,
           newPoint,
-          mouseState.pickedOffset,
+          pickedOffset,
         );
         annotationLayer.source.update(ref, newAnnotation);
         annotationLayer.source.commit(ref);
