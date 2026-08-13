@@ -1163,6 +1163,7 @@ abstract class PlaceAnnotationTool extends LegacyTool {
         ? fitGlobalPosition(this.layer, mouseState, {
             radius: annotationFit.radius.value,
             method: annotationFit.method.value,
+            invert: annotationFit.invert.value,
           })
         : mouseState.unsnappedPosition;
     return getGlobalPositionInAnnotationCoordinates(
@@ -1996,6 +1997,7 @@ const ANNOTATION_COLOR_JSON_KEY = "annotationColor";
 const ANNOTATION_FIT_ENABLED_JSON_KEY = "annotationFitEnabled";
 const ANNOTATION_FIT_RADIUS_JSON_KEY = "annotationFitRadius";
 const ANNOTATION_FIT_METHOD_JSON_KEY = "annotationFitMethod";
+const ANNOTATION_FIT_INVERT_JSON_KEY = "annotationFitInvert";
 
 function verifyFitRadius(obj: any): number {
   const value = verifyInt(obj);
@@ -2060,6 +2062,14 @@ const ANNOTATION_FIT_LAYER_CONTROLS: Record<
     })),
     isValid: (layer) => layer.annotationFit.enabled,
   },
+  [ANNOTATION_FIT_INVERT_JSON_KEY]: {
+    label: "Dark feature",
+    title:
+      "Fit a dark blob on a bright background, rather than a bright blob on a dark background.",
+    toolJson: ANNOTATION_FIT_INVERT_JSON_KEY,
+    ...checkboxLayerControl((layer) => layer.annotationFit.invert),
+    isValid: (layer) => layer.annotationFit.enabled,
+  },
 };
 export function UserLayerWithAnnotationsMixin<
   TBase extends { new (...args: any[]): UserLayer },
@@ -2080,6 +2090,7 @@ export function UserLayerWithAnnotationsMixin<
       enabled: new TrackableBoolean(false),
       radius: new TrackableValue<number>(DEFAULT_FIT_RADIUS, verifyFitRadius),
       method: new TrackableValue<string>(DEFAULT_POINT_FITTER, verifyFitMethod),
+      invert: new TrackableBoolean(false),
     };
     static supportColorPickerInAnnotationTab = true;
 
@@ -2165,6 +2176,9 @@ export function UserLayerWithAnnotationsMixin<
       );
       this.annotationFit.method.restoreState(
         specification[ANNOTATION_FIT_METHOD_JSON_KEY],
+      );
+      this.annotationFit.invert.restoreState(
+        specification[ANNOTATION_FIT_INVERT_JSON_KEY],
       );
     }
 
@@ -2861,6 +2875,7 @@ export function UserLayerWithAnnotationsMixin<
       x[ANNOTATION_FIT_ENABLED_JSON_KEY] = this.annotationFit.enabled.toJSON();
       x[ANNOTATION_FIT_RADIUS_JSON_KEY] = this.annotationFit.radius.toJSON();
       x[ANNOTATION_FIT_METHOD_JSON_KEY] = this.annotationFit.method.toJSON();
+      x[ANNOTATION_FIT_INVERT_JSON_KEY] = this.annotationFit.invert.toJSON();
       return x;
     }
   }

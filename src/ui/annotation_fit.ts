@@ -24,7 +24,7 @@
  */
 
 import type { PointFitter, VoxelPatch } from "#src/annotation/point_fit.js";
-import { getPointFitter } from "#src/annotation/point_fit.js";
+import { getPointFitter, normalizePatch } from "#src/annotation/point_fit.js";
 import type { MouseSelectionState, UserLayer } from "#src/layer/index.js";
 import { ImageRenderLayer } from "#src/sliceview/volume/image_renderlayer.js";
 import { StatusMessage } from "#src/status.js";
@@ -37,6 +37,8 @@ export interface FitSettings {
   radius: number;
   /** Name of a fitter registered in `#src/annotation/point_fit.js`. */
   method: string;
+  /** Fit a dark blob on a bright background, rather than a bright blob on a dark background. */
+  invert: boolean;
 }
 
 /**
@@ -161,6 +163,9 @@ export function fitGlobalPosition(
     );
     return clicked;
   }
+  // Fitters assume a fixed, bounded intensity range; the source image may be arbitrary floats.
+  // They also fit a bright peak, so a dark feature must be inverted first.
+  normalizePatch(sampled.patch, settings.invert);
   const fit: PointFitter | undefined = getPointFitter(settings.method);
   const center = fit?.(sampled.patch);
   if (center === undefined) {

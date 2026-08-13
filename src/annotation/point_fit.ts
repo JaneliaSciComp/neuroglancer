@@ -77,6 +77,32 @@ const MIN_SAMPLES = 2 * NUM_PARAMS;
 const DEFAULT_RELATIVE_THRESHOLD = 0.2;
 
 /**
+ * Rescales patch samples in place to [0, 1], so the fitters below see a fixed dynamic range
+ * regardless of the source image's units or scale (uint8, uint16, or arbitrary float).  `NaN`
+ * (missing) samples are left untouched.
+ *
+ * Both fitters below fit a peak (a bright blob), not a trough. Set `invert` when the feature of
+ * interest is dark on a bright background, so the fitted blob is the dark spot rather than its
+ * bright surroundings.
+ */
+export function normalizePatch(patch: VoxelPatch, invert = false): void {
+  const { data } = patch;
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const v of data) {
+    // Both comparisons are false for NaN, so missing samples never become the extremes.
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  const range = max - min;
+  // A flat or fully-missing patch: leave it as is, the fitters already reject it.
+  if (!(range > 0)) return;
+  for (let i = 0; i < data.length; ++i) {
+    data[i] = invert ? (max - data[i]) / range : (data[i] - min) / range;
+  }
+}
+
+/**
  * Fits an axis-aligned 3-d Gaussian by linear least squares on the log-transformed intensity.
  *
  * Taking the log of a Gaussian yields a quadratic with no cross terms,

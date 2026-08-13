@@ -22,6 +22,7 @@ import {
   centroidFitter,
   gaussianLogFitter,
   getPointFitter,
+  normalizePatch,
 } from "#src/annotation/point_fit.js";
 
 const SIZE = 11;
@@ -80,6 +81,22 @@ describe("gaussianLogFitter", () => {
     }
   });
 
+  it("recovers a sub-voxel center on a Gaussian at arbitrary float scale", () => {
+    // Same shape as the clean-Gaussian case above, but at a magnitude far outside the
+    // 0-255/0-65535 range a raw uint8/uint16 image would have.
+    const center: [number, number, number] = [5.3, 4.7, 6.1];
+    const patch = makeGaussianPatch(center, 1.5, {
+      background: 2e-7,
+      amplitude: 3.4e-6,
+    });
+    normalizePatch(patch);
+    const result = gaussianLogFitter(patch);
+    expect(result).toBeDefined();
+    for (let i = 0; i < 3; ++i) {
+      expect(Math.abs(result![i] - center[i])).toBeLessThan(1e-6);
+    }
+  });
+
   it("handles an anisotropic Gaussian", () => {
     const center: [number, number, number] = [4.4, 5.9, 5.2];
     const result = gaussianLogFitter(
@@ -125,6 +142,20 @@ describe("gaussianLogFitter", () => {
       amplitude: -200,
     });
     expect(gaussianLogFitter(patch)).toBeUndefined();
+  });
+
+  it("recovers a dark blob's center once normalizePatch inverts it", () => {
+    const center: [number, number, number] = [5.3, 4.7, 6.1];
+    const patch = makeGaussianPatch(center, 1.5, {
+      background: 220,
+      amplitude: -200,
+    });
+    normalizePatch(patch, /* invert= */ true);
+    const result = gaussianLogFitter(patch);
+    expect(result).toBeDefined();
+    for (let i = 0; i < 3; ++i) {
+      expect(Math.abs(result![i] - center[i])).toBeLessThan(1e-6);
+    }
   });
 
   it("returns undefined for a uniform patch", () => {
@@ -191,5 +222,43 @@ describe("centroidFitter", () => {
   it("returns undefined when every sample is missing", () => {
     const data = new Float32Array(SIZE * SIZE * SIZE).fill(Number.NaN);
     expect(centroidFitter({ data, size: [SIZE, SIZE, SIZE] })).toBeUndefined();
+  });
+});
+
+describe("normalizePatch", () => {
+  it("rescales an arbitrary-range float patch to [0, 1], preserving order", () => {
+    const data = Float32Array.from([-1e6, -1, 0, 3.5, 1e6]);
+    const patch = { data, size: [5, 1, 1] as [number, number, number] };
+    normalizePatch(patch);
+    expect(patch.data[0]).toBeCloseTo(0, 5);
+    expect(patch.data[4]).toBeCloseTo(1, 5);
+    for (let i = 1; i < patch.data.length; ++i) {
+      expect(patch.data[i]).toBeGreaterThanOrEqual(patch.data[i - 1]);
+    }
+  });
+
+  it("leaves NaN samples as NaN", () => {
+    const data = Float32Array.from([0, Number.NaN, 10]);
+    const patch = { data, size: [3, 1, 1] as [number, number, number] };
+    normalizePatch(patch);
+    expect(Number.isNaN(patch.data[1])).toBe(true);
+  });
+
+  it("is a no-op on a uniform patch", () => {
+    const data = new Float32Array(SIZE * SIZE * SIZE).fill(42);
+    const patch = { data, size: [SIZE, SIZE, SIZE] as [number, number, number] };
+    normalizePatch(patch);
+    expect(Array.from(patch.data)).toEqual(Array.from(data));
+  });
+
+  it("inverts, when requested, so the darkest sample maps to 1", () => {
+    const data = Float32Array.from([-1e6, -1, 0, 3.5, 1e6]);
+    const patch = { data, size: [5, 1, 1] as [number, number, number] };
+    normalizePatch(patch, /* invert= */ true);
+    expect(patch.data[0]).toBeCloseTo(1, 5);
+    expect(patch.data[4]).toBeCloseTo(0, 5);
+    for (let i = 1; i < patch.data.length; ++i) {
+      expect(patch.data[i]).toBeLessThanOrEqual(patch.data[i - 1]);
+    }
   });
 });
