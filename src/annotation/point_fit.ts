@@ -58,18 +58,13 @@ export function getPointFitterNames(): string[] {
   return Array.from(pointFitters.keys());
 }
 
-export const DEFAULT_POINT_FITTER = "gaussianLog";
+export const DEFAULT_POINT_FITTER = "gaussianNonlinear";
 
 /**
- * Number of coefficients in the quadratic log-intensity model: `[1, u, u^2, v, v^2, w, w^2]`.
+ * Minimum number of above-threshold samples required before attempting a fit.  A lone hot pixel,
+ * or a couple of them, has no spatial extent to fit a Gaussian to.
  */
-const NUM_PARAMS = 7;
-
-/**
- * Minimum number of above-threshold samples required before attempting the solve.  Seven is the
- * bare rank requirement; twice that gives the fit something to average over.
- */
-const MIN_SAMPLES = 2 * NUM_PARAMS;
+const MIN_SAMPLES = 14;
 
 /**
  * Fraction of the peak height below which samples are excluded from the fit.
@@ -77,11 +72,11 @@ const MIN_SAMPLES = 2 * NUM_PARAMS;
 const DEFAULT_RELATIVE_THRESHOLD = 0.2;
 
 /**
- * Rescales patch samples in place to [0, 1], so the fitters below see a fixed dynamic range
+ * Rescales patch samples in place to [0, 1], so the fitter below sees a fixed dynamic range
  * regardless of the source image's units or scale (uint8, uint16, or arbitrary float).  `NaN`
  * (missing) samples are left untouched.
  *
- * Both fitters below fit a peak (a bright blob), not a trough. Set `invert` when the feature of
+ * The fitter below fits a peak (a bright blob), not a trough. Set `invert` when the feature of
  * interest is dark on a bright background, so the fitted blob is the dark spot rather than its
  * bright surroundings.
  */
@@ -95,121 +90,11 @@ export function normalizePatch(patch: VoxelPatch, invert = false): void {
     if (v > max) max = v;
   }
   const range = max - min;
-  // A flat or fully-missing patch: leave it as is, the fitters already reject it.
+  // A flat or fully-missing patch: leave it as is, the fitter already rejects it.
   if (!(range > 0)) return;
   for (let i = 0; i < data.length; ++i) {
     data[i] = invert ? (max - data[i]) / range : (data[i] - min) / range;
   }
-}
-
-/**
- * Fits an axis-aligned 3-d Gaussian by linear least squares on the log-transformed intensity.
- *
- * Taking the log of a Gaussian yields a quadratic with no cross terms,
- *
- *     ln(I - background) = c0 + c1*u + c2*u^2 + c3*v + c4*v^2 + c5*w + c6*w^2
- *
- * which is linear in its coefficients, so the fit is a single closed-form solve rather than an
- * iterative optimization.  The center along each axis is the vertex of the corresponding parabola,
- * `-c1 / (2*c2)`, and downward curvature (`c2 < 0`) is what distinguishes a peak from a saddle or
- * a trough.
- *
- * Two details make this behave on real data.  The background is taken to be the patch minimum and
- * only samples above `relativeThreshold` of the peak height are fit, which confines the model to
- * the core of the blob where it actually holds and keeps the result from being dragged by a
- * truncated tail.  Samples are weighted by the squared background-subtracted height, which
- * compensates for the log transform inflating the variance of dim samples by `1 / height^2`; this
- * is the standard correction to the naive log-parabola fit, which otherwise lets the noisiest
- * samples dominate.
- *
- * Returns `undefined` if there are too few usable samples, if the system is singular, if any axis
- * lacks downward curvature, or if the resulting center falls outside the sampled patch.
- */
-export function gaussianLogFitter(
-  patch: VoxelPatch,
-  options: { relativeThreshold?: number } = {},
-): [number, number, number] | undefined {
-  const { relativeThreshold = DEFAULT_RELATIVE_THRESHOLD } = options;
-  const { data, size } = patch;
-  let background = Number.POSITIVE_INFINITY;
-  let peak = Number.NEGATIVE_INFINITY;
-  for (const v of data) {
-    // Both comparisons are false for NaN, so missing samples never become the extremes.
-    if (v < background) background = v;
-    if (v > peak) peak = v;
-  }
-  if (!Number.isFinite(background) || !Number.isFinite(peak)) return undefined;
-  const threshold = relativeThreshold * (peak - background);
-  if (!(threshold > 0)) return undefined;
-
-  // Centering the coordinates on the patch keeps the normal equations well conditioned.
-  const origin = [(size[0] - 1) / 2, (size[1] - 1) / 2, (size[2] - 1) / 2];
-
-  // Normal equations `ata * coefficients = atb`, column-major.  `ata` is symmetric, so the
-  // column-major/row-major distinction does not matter for it.
-  const ata = new Float64Array(NUM_PARAMS * NUM_PARAMS);
-  const atb = new Float64Array(NUM_PARAMS);
-  const row = new Float64Array(NUM_PARAMS);
-  row[0] = 1;
-  let count = 0;
-  let i = 0;
-  for (let z = 0; z < size[2]; ++z) {
-    const w = z - origin[2];
-    for (let y = 0; y < size[1]; ++y) {
-      const v = y - origin[1];
-      for (let x = 0; x < size[0]; ++x, ++i) {
-        const height = data[i] - background;
-        // False for NaN, and for everything at or below the threshold.
-        if (!(height > threshold)) continue;
-        const u = x - origin[0];
-        row[1] = u;
-        row[2] = u * u;
-        row[3] = v;
-        row[4] = v * v;
-        row[5] = w;
-        row[6] = w * w;
-        const weight = height * height;
-        const value = Math.log(height);
-        for (let a = 0; a < NUM_PARAMS; ++a) {
-          const weighted = weight * row[a];
-          atb[a] += weighted * value;
-          for (let b = 0; b < NUM_PARAMS; ++b) {
-            ata[a * NUM_PARAMS + b] += weighted * row[b];
-          }
-        }
-        ++count;
-      }
-    }
-  }
-  if (count < MIN_SAMPLES) return undefined;
-
-  const determinant = matrix.inverseInplace(ata, NUM_PARAMS, NUM_PARAMS);
-  if (!Number.isFinite(determinant) || determinant === 0) return undefined;
-  const coefficients = new Float64Array(NUM_PARAMS);
-  matrix.multiply(
-    coefficients,
-    NUM_PARAMS,
-    ata,
-    NUM_PARAMS,
-    atb,
-    NUM_PARAMS,
-    NUM_PARAMS,
-    NUM_PARAMS,
-    1,
-  );
-
-  const center: [number, number, number] = [0, 0, 0];
-  for (let k = 0; k < 3; ++k) {
-    const linear = coefficients[1 + 2 * k];
-    const quadratic = coefficients[2 + 2 * k];
-    // A maximum requires downward curvature; anything else is not a peak.
-    if (!(quadratic < 0)) return undefined;
-    const position = origin[k] - linear / (2 * quadratic);
-    // Refuse to extrapolate a center outside the region that was actually sampled.
-    if (!(position >= 0 && position <= size[k] - 1)) return undefined;
-    center[k] = position;
-  }
-  return center;
 }
 
 /**
@@ -228,9 +113,9 @@ const MIN_SIGMA = 0.25;
  * Evaluates the Gaussian model and its residual and Jacobian contribution at one sample, and
  * accumulates them into the normal equations `JTJ` and `JTr` and the running sum-of-squares cost.
  *
- * Unlike `gaussianLogFitter`, this fits the intensity directly rather than its log, so no
- * `height^2` reweighting is needed to correct a log-transform bias -- ordinary least squares on
- * the raw residual is already the right objective.
+ * This fits the intensity directly rather than its log, so no `height^2` reweighting is needed to
+ * correct a log-transform bias -- ordinary least squares on the raw residual is already the right
+ * objective.
  */
 function accumulateGaussianResidual(
   p: Float64Array,
@@ -305,14 +190,13 @@ function evaluateModel(
 /**
  * Fits an axis-aligned 3-d Gaussian, `background + amplitude * exp(-sum((x - center)^2 /
  * (2*sigma^2)))`, by nonlinear least squares (Levenberg-Marquardt) against the raw patch
- * intensity -- as opposed to `gaussianLogFitter`'s closed-form fit of the log-transformed
- * intensity, which only approximates the same objective and needs a variance correction to do so.
+ * intensity.
  *
  * The background, amplitude, and per-axis standard deviation are fit alongside the center, rather
- * than derived from the patch as `gaussianLogFitter` does, so the result isn't sensitive to a
- * skewed background estimate. The solve is seeded from the weighted mean and variance of the
- * above-threshold samples -- a cheap moment estimate that gets Levenberg-Marquardt close enough to
- * converge in a handful of iterations.
+ * than derived from the patch, so the result isn't sensitive to a skewed background estimate. The
+ * solve is seeded from the weighted mean and variance of the above-threshold samples -- a cheap
+ * moment estimate that gets Levenberg-Marquardt close enough to converge in a handful of
+ * iterations.
  *
  * Returns `undefined` if the initial estimate is degenerate, if too few samples are usable, if the
  * solve never improves on its seed, or if the converged fit fell to a trough or drifted outside
@@ -444,5 +328,4 @@ export function gaussianNonlinearFitter(
   return center;
 }
 
-registerPointFitter("gaussianLog", gaussianLogFitter);
 registerPointFitter("gaussianNonlinear", gaussianNonlinearFitter);

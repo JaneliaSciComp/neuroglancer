@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { gaussianLogFitter } from "#src/annotation/point_fit.js";
+import { gaussianNonlinearFitter } from "#src/annotation/point_fit.js";
 import type { ImageRenderLayer } from "#src/sliceview/volume/image_renderlayer.js";
 import { samplePatch } from "#src/ui/annotation_fit.js";
 
@@ -79,7 +79,7 @@ describe("samplePatch", () => {
       DISPLAY_DIMS,
       5,
     )!;
-    const fit = gaussianLogFitter(sampled.patch)!;
+    const fit = gaussianNonlinearFitter(sampled.patch)!;
     expect(fit).toBeDefined();
     for (let k = 0; k < 3; ++k) {
       // Bounded by the float32 rounding of the sampled values, not by the fit; a half-voxel
