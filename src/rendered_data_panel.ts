@@ -21,6 +21,7 @@ import type { Annotation } from "#src/annotation/index.js";
 import { getAnnotationTypeRenderHandler } from "#src/annotation/type_handler.js";
 import type { DisplayContext } from "#src/display_context.js";
 import { RenderedPanel } from "#src/display_context.js";
+import type { UserLayer } from "#src/layer/index.js";
 import type { NavigationState } from "#src/navigation_state.js";
 import { PickIDManager } from "#src/object_picking.js";
 import {
@@ -33,6 +34,12 @@ import {
 } from "#src/rendered_data_panel_picking.js";
 import { StatusMessage } from "#src/status.js";
 import type { TrackableValue } from "#src/trackable_value.js";
+import {
+  canFitAnnotation,
+  fitGlobalPosition,
+  getGlobalPositionInAnnotationCoordinates,
+} from "#src/ui/annotation_fit.js";
+import type { UserLayerWithAnnotations } from "#src/ui/annotations.js";
 import { AutomaticallyFocusedElement } from "#src/util/automatic_focus.js";
 import type { Borrowed } from "#src/util/disposable.js";
 import type {
@@ -56,6 +63,17 @@ import type { ViewerState } from "#src/viewer_state.js";
 declare let NEUROGLANCER_SHOW_OBJECT_SELECTION_TOOLTIP: boolean | undefined;
 
 const tempVec3 = vec3.create();
+
+/**
+ * Every layer type that can carry an annotation subsource applies `UserLayerWithAnnotationsMixin`
+ * (segmentation, annotation, and image layers), so this normally succeeds; the check just guards
+ * against a layer type that doesn't.
+ */
+function hasAnnotationFit(
+  layer: UserLayer,
+): layer is UserLayerWithAnnotations {
+  return "annotationFit" in layer;
+}
 
 export interface RenderedDataViewerState extends ViewerState {
   inputEventMap: EventActionMap;
@@ -715,6 +733,60 @@ export abstract class RenderedDataPanel extends RenderedPanel {
         } finally {
           ref.dispose();
         }
+      }
+    });
+
+    registerActionListener(element, "fit-annotation-vertex", () => {
+      const { mouseState } = this.viewer;
+      const selectedAnnotationId = mouseState.pickedAnnotationId;
+      const annotationLayer = mouseState.pickedAnnotationLayer;
+      if (
+        annotationLayer === undefined ||
+        annotationLayer.source.readonly ||
+        selectedAnnotationId === undefined
+      ) {
+        return;
+      }
+      const ref = annotationLayer.source.getReference(selectedAnnotationId);
+      try {
+        const ann = <Annotation | null>ref.value;
+        if (ann == null || !canFitAnnotation(ann)) return;
+        // The settings that describe how to fit live on the owning layer (shared across all of
+        // its tools), not on the picked `AnnotationLayerState` itself.
+        const owningLayer = annotationLayer.dataSource.layer;
+        if (!hasAnnotationFit(owningLayer)) return;
+        // Snapshot before `updateUnconditionally()` forces a fresh GPU pick, which can resolve to
+        // a different sub-part (e.g. a nearby vertex) than the one that triggered this action.
+        const pickedOffset = mouseState.pickedOffset;
+        const handler = getAnnotationTypeRenderHandler(ann.type);
+        if (handler.isFullObjectPick?.(pickedOffset)) {
+          StatusMessage.showTemporaryMessage(
+            "Cannot snap to fit: click directly on a vertex, not the body of the shape.",
+          );
+          return;
+        }
+        if (!mouseState.updateUnconditionally()) return;
+        const fitted = fitGlobalPosition(owningLayer, mouseState, {
+          radius: owningLayer.annotationFit.radius.value,
+          method: owningLayer.annotationFit.method.value,
+          invert: owningLayer.annotationFit.invert.value,
+          relativeThreshold: owningLayer.annotationFit.relativeThreshold.value,
+          minSamples: owningLayer.annotationFit.minSamples.value,
+        });
+        const newPoint = getGlobalPositionInAnnotationCoordinates(
+          fitted,
+          annotationLayer,
+        );
+        if (newPoint === undefined) return;
+        const newAnnotation = handler.updateViaRepresentativePoint(
+          ann,
+          newPoint,
+          pickedOffset,
+        );
+        annotationLayer.source.update(ref, newAnnotation);
+        annotationLayer.source.commit(ref);
+      } finally {
+        ref.dispose();
       }
     });
 
