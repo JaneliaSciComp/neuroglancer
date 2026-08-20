@@ -182,31 +182,29 @@ function findImageRenderLayer(
 /**
  * Returns the fitted position, in the global coordinate space, of the feature under the mouse.
  *
- * Falls back to the raw cursor position, with an explanatory status message, whenever the fit
- * cannot be performed — a click is never silently discarded, and never lands somewhere the user
- * did not indicate.
+ * Returns `undefined`, with an explanatory status message, whenever the fit cannot be performed —
+ * callers should leave the vertex where it already was rather than move it to the raw cursor
+ * position, since a failed fit carries no information about where the feature actually is.
  */
 export function fitGlobalPosition(
   layer: UserLayer,
   mouseState: MouseSelectionState,
   settings: FitSettings,
-): Float32Array {
+): Float32Array | undefined {
   const clicked = Float32Array.from(mouseState.unsnappedPosition);
   const source = findImageRenderLayer(layer);
   if (source === undefined) {
     StatusMessage.showTemporaryMessage(
-      "Cannot snap to fit: no visible image layer to read. " +
-        "Placed at the clicked position.",
+      "Cannot snap to fit: no visible image layer to read.",
     );
-    return clicked;
+    return undefined;
   }
   const { displayDimensions } = mouseState;
   if (displayDimensions === undefined) {
     StatusMessage.showTemporaryMessage(
-      "Cannot snap to fit: no display dimensions for the cursor position. " +
-        "Placed at the clicked position.",
+      "Cannot snap to fit: no display dimensions for the cursor position.",
     );
-    return clicked;
+    return undefined;
   }
   const sampled = samplePatch(
     source.renderLayer,
@@ -216,10 +214,9 @@ export function fitGlobalPosition(
   );
   if (sampled === undefined) {
     StatusMessage.showTemporaryMessage(
-      `Cannot snap to fit: image data around the cursor in "${source.name}" is not loaded. ` +
-        "Placed at the clicked position.",
+      `Cannot snap to fit: image data around the cursor in "${source.name}" is not loaded.`,
     );
-    return clicked;
+    return undefined;
   }
   // Fitters assume a fixed, bounded intensity range; the source image may be arbitrary floats.
   // They also fit a bright peak, so a dark feature must be inverted first.
@@ -232,10 +229,10 @@ export function fitGlobalPosition(
   if (center === undefined) {
     StatusMessage.showTemporaryMessage(
       `Cannot snap to fit: the ${settings.method} fit did not converge within ` +
-        `${settings.radius} voxels of the cursor. Placed at the clicked position. ` +
+        `${settings.radius} voxels of the cursor. ` +
         "Click closer to the feature, or increase the fit radius.",
     );
-    return clicked;
+    return undefined;
   }
   const fitted = Float32Array.from(clicked);
   const { displayDimensionIndices } = displayDimensions;

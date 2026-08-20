@@ -773,6 +773,9 @@ export abstract class RenderedDataPanel extends RenderedPanel {
           relativeThreshold: owningLayer.annotationFit.relativeThreshold.value,
           minSamples: owningLayer.annotationFit.minSamples.value,
         });
+        // Fit failed (status message already shown): leave the vertex where it was rather than
+        // move it to the raw cursor position.
+        if (fitted === undefined) return;
         const newPoint = getGlobalPositionInAnnotationCoordinates(
           fitted,
           annotationLayer,
