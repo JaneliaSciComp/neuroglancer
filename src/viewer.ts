@@ -136,6 +136,7 @@ import {
   CompoundTrackable,
   optionallyRestoreFromJsonMember,
 } from "#src/util/trackable.js";
+import { TrackableEnum } from "#src/util/trackable_enum.js";
 import type {
   ViewerState,
   VisibilityPrioritySpecification,
@@ -146,6 +147,7 @@ import { CheckboxIcon } from "#src/widget/checkbox_icon.js";
 import { makeCopyUrlButton } from "#src/widget/copy_button.js";
 import { makeIcon } from "#src/widget/icon.js";
 import {
+  CoordinateDisplayMode,
   MousePositionWidget,
   PositionWidget,
   registerDimensionToolForLayerGroupViewer,
@@ -302,6 +304,7 @@ class TrackableViewerState extends CompoundTrackable {
     this.add("projectionDepth", viewer.projectionDepthRange);
     this.add("layers", viewer.layerSpecification);
     this.add("showAxisLines", viewer.showAxisLines);
+    this.add("coordinateDisplayMode", viewer.coordinateDisplayMode);
     this.add("wireFrame", viewer.wireFrame);
     this.add("enableAdaptiveDownsampling", viewer.enableAdaptiveDownsampling);
     this.add("showScaleBar", viewer.showScaleBar);
@@ -477,6 +480,10 @@ export class Viewer extends RefCounted implements ViewerState {
     new SelectedLayerState(this.layerManager.addRef()),
   );
   showAxisLines = new TrackableBoolean(true, true);
+  coordinateDisplayMode = new TrackableEnum<CoordinateDisplayMode>(
+    CoordinateDisplayMode,
+    CoordinateDisplayMode.VOXEL,
+  );
   wireFrame = new TrackableBoolean(false, false);
   enableAdaptiveDownsampling = new TrackableBoolean(true, true);
   showScaleBar = new TrackableBoolean(true, true);
@@ -812,6 +819,7 @@ export class Viewer extends RefCounted implements ViewerState {
         document.createElement("div"),
         this.mouseState,
         this.navigationState.coordinateSpace,
+        this.coordinateDisplayMode,
       ),
     );
     mousePositionWidget.element.style.flex = "1";
@@ -1230,6 +1238,19 @@ export class Viewer extends RefCounted implements ViewerState {
     });
 
     this.bindAction("toggle-axis-lines", () => this.showAxisLines.toggle());
+    this.bindAction("toggle-coordinate-units", () => {
+      const mode = this.coordinateDisplayMode;
+      const physical = mode.value !== CoordinateDisplayMode.PHYSICAL;
+      mode.value = physical
+        ? CoordinateDisplayMode.PHYSICAL
+        : CoordinateDisplayMode.VOXEL;
+      // The readout itself is only visible while the cursor is over a data
+      // panel, so without this the toggle looks like a no-op.
+      StatusMessage.showTemporaryMessage(
+        `Cursor coordinates: ${physical ? "physical" : "voxel"}`,
+        1500,
+      );
+    });
     this.bindAction("toggle-scale-bar", () => this.showScaleBar.toggle());
     this.bindAction("toggle-default-annotations", () =>
       this.showDefaultAnnotations.toggle(),
