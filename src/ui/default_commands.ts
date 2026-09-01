@@ -105,6 +105,12 @@ const STATIC_COMMANDS: readonly BuiltinCommand[] = [
     description: "Show or hide the axis line indicators.",
   },
   {
+    id: "toggle-coordinate-units",
+    label: "Toggle Coordinate Units",
+    description:
+      "Switch the cursor position readout between voxel and physical coordinates.",
+  },
+  {
     id: "toggle-orthographic-projection",
     label: "Toggle Orthographic Projection",
     description:
