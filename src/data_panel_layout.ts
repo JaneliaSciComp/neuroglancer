@@ -26,6 +26,7 @@ import type {
   TrackableDataSelectionState,
 } from "#src/layer/index.js";
 import * as L from "#src/layout.js";
+import type { MeasurementState } from "#src/measurement_state.js";
 import type { TrackableZoomInterface } from "#src/navigation_state.js";
 import {
   DisplayPose,
@@ -68,6 +69,7 @@ import { optionallyRestoreFromJsonMember } from "#src/util/trackable.js";
 import { WatchableMap } from "#src/util/watchable_map.js";
 import type { VisibilityPrioritySpecification } from "#src/viewer_state.js";
 import { DisplayDimensionsWidget } from "#src/widget/display_dimensions_widget.js";
+import type { CoordinateDisplayMode } from "#src/widget/position_widget.js";
 import type { ScaleBarOptions } from "#src/widget/scale_bar.js";
 
 export interface SliceViewViewerState {
@@ -91,6 +93,8 @@ export interface ViewerUIState
   selectionDetailsState: TrackableDataSelectionState;
   showPerspectiveSliceViews: TrackableBoolean;
   showAxisLines: TrackableBoolean;
+  measurementState: MeasurementState;
+  coordinateDisplayMode: WatchableValueInterface<CoordinateDisplayMode>;
   wireFrame: TrackableBoolean;
   enableAdaptiveDownsampling: TrackableBoolean;
   showScaleBar: TrackableBoolean;
@@ -177,6 +181,8 @@ export function getCommonViewerState(viewer: ViewerUIState) {
     mouseState: viewer.mouseState,
     layerManager: viewer.layerManager,
     showAxisLines: viewer.showAxisLines,
+    measurementState: viewer.measurementState,
+    coordinateDisplayMode: viewer.coordinateDisplayMode,
     wireFrame: viewer.wireFrame,
     enableAdaptiveDownsampling: viewer.enableAdaptiveDownsampling,
     visibleLayerRoles: viewer.visibleLayerRoles,
