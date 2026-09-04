@@ -55,6 +55,7 @@ import {
 } from "#src/layer/index.js";
 import { LayerGroupViewer } from "#src/layer_group_viewer.js";
 import { RootLayoutContainer } from "#src/layer_groups_layout.js";
+import { MeasurementState } from "#src/measurement_state.js";
 import {
   CoordinateSpacePlaybackVelocity,
   DisplayPose,
@@ -484,6 +485,9 @@ export class Viewer extends RefCounted implements ViewerState {
     CoordinateDisplayMode,
     CoordinateDisplayMode.VOXEL,
   );
+  // Transient measurement overlay (ruler/box); intentionally not registered with
+  // `TrackableViewerState`, so it never appears in the serialized JSON state.
+  measurementState = this.registerDisposer(new MeasurementState());
   wireFrame = new TrackableBoolean(false, false);
   enableAdaptiveDownsampling = new TrackableBoolean(true, true);
   showScaleBar = new TrackableBoolean(true, true);
