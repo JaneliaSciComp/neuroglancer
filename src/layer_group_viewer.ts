@@ -29,6 +29,7 @@ import type {
   SelectedLayerState,
 } from "#src/layer/index.js";
 import { LayerSubsetSpecification } from "#src/layer/index.js";
+import type { MeasurementState } from "#src/measurement_state.js";
 import type {
   CoordinateSpacePlaybackVelocity,
   TrackableCrossSectionZoom,
@@ -80,6 +81,7 @@ import {
 } from "#src/util/trackable.js";
 import type { WatchableVisibilityPriority } from "#src/visibility_priority/frontend.js";
 import { EnumSelectWidget } from "#src/widget/enum_widget.js";
+import type { CoordinateDisplayMode } from "#src/widget/position_widget.js";
 import type { TrackableScaleBarOptions } from "#src/widget/scale_bar.js";
 
 declare let NEUROGLANCER_SHOW_LAYER_BAR_EXTRA_BUTTONS: boolean | undefined;
@@ -92,6 +94,8 @@ export interface LayerGroupViewerState {
   mouseState: MouseSelectionState;
   showAxisLines: TrackableBoolean;
   showCrossSectionHoverPosition: TrackableBoolean;
+  measurementState: MeasurementState;
+  coordinateDisplayMode: WatchableValueInterface<CoordinateDisplayMode>;
   wireFrame: TrackableBoolean;
   enableAdaptiveDownsampling: TrackableBoolean;
   showScaleBar: TrackableBoolean;
@@ -358,6 +362,12 @@ export class LayerGroupViewer extends RefCounted {
   }
   get showCrossSectionHoverPosition() {
     return this.viewerState.showCrossSectionHoverPosition;
+  }
+  get measurementState() {
+    return this.viewerState.measurementState;
+  }
+  get coordinateDisplayMode() {
+    return this.viewerState.coordinateDisplayMode;
   }
   get wireFrame() {
     return this.viewerState.wireFrame;

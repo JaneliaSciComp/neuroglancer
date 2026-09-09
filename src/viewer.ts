@@ -55,6 +55,7 @@ import {
 } from "#src/layer/index.js";
 import { LayerGroupViewer } from "#src/layer_group_viewer.js";
 import { RootLayoutContainer } from "#src/layer_groups_layout.js";
+import { MeasurementState } from "#src/measurement_state.js";
 import {
   CoordinateSpacePlaybackVelocity,
   DisplayPose,
@@ -136,6 +137,7 @@ import {
   CompoundTrackable,
   optionallyRestoreFromJsonMember,
 } from "#src/util/trackable.js";
+import { TrackableEnum } from "#src/util/trackable_enum.js";
 import type {
   ViewerState,
   VisibilityPrioritySpecification,
@@ -146,6 +148,7 @@ import { CheckboxIcon } from "#src/widget/checkbox_icon.js";
 import { makeCopyUrlButton } from "#src/widget/copy_button.js";
 import { makeIcon } from "#src/widget/icon.js";
 import {
+  CoordinateDisplayMode,
   MousePositionWidget,
   PositionWidget,
   registerDimensionToolForLayerGroupViewer,
@@ -306,6 +309,7 @@ class TrackableViewerState extends CompoundTrackable {
       "showCrossSectionHoverPosition",
       viewer.showCrossSectionHoverPosition,
     );
+    this.add("coordinateDisplayMode", viewer.coordinateDisplayMode);
     this.add("wireFrame", viewer.wireFrame);
     this.add("enableAdaptiveDownsampling", viewer.enableAdaptiveDownsampling);
     this.add("showScaleBar", viewer.showScaleBar);
@@ -482,6 +486,13 @@ export class Viewer extends RefCounted implements ViewerState {
   );
   showAxisLines = new TrackableBoolean(true, true);
   showCrossSectionHoverPosition = new TrackableBoolean(false, false);
+  coordinateDisplayMode = new TrackableEnum<CoordinateDisplayMode>(
+    CoordinateDisplayMode,
+    CoordinateDisplayMode.VOXEL,
+  );
+  // Transient measurement overlay (ruler/box); intentionally not registered with
+  // `TrackableViewerState`, so it never appears in the serialized JSON state.
+  measurementState = this.registerDisposer(new MeasurementState());
   wireFrame = new TrackableBoolean(false, false);
   enableAdaptiveDownsampling = new TrackableBoolean(true, true);
   showScaleBar = new TrackableBoolean(true, true);
@@ -817,6 +828,7 @@ export class Viewer extends RefCounted implements ViewerState {
         document.createElement("div"),
         this.mouseState,
         this.navigationState.coordinateSpace,
+        this.coordinateDisplayMode,
       ),
     );
     mousePositionWidget.element.style.flex = "1";
@@ -1238,6 +1250,19 @@ export class Viewer extends RefCounted implements ViewerState {
     this.bindAction("toggle-cross-section-hover-position", () =>
       this.showCrossSectionHoverPosition.toggle(),
     );
+    this.bindAction("toggle-coordinate-units", () => {
+      const mode = this.coordinateDisplayMode;
+      const physical = mode.value !== CoordinateDisplayMode.PHYSICAL;
+      mode.value = physical
+        ? CoordinateDisplayMode.PHYSICAL
+        : CoordinateDisplayMode.VOXEL;
+      // The readout itself is only visible while the cursor is over a data
+      // panel, so without this the toggle looks like a no-op.
+      StatusMessage.showTemporaryMessage(
+        `Cursor coordinates: ${physical ? "physical" : "voxel"}`,
+        1500,
+      );
+    });
     this.bindAction("toggle-scale-bar", () => this.showScaleBar.toggle());
     this.bindAction("toggle-default-annotations", () =>
       this.showDefaultAnnotations.toggle(),

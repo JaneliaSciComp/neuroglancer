@@ -105,6 +105,12 @@ const STATIC_COMMANDS: readonly BuiltinCommand[] = [
     description: "Show or hide the axis line indicators.",
   },
   {
+    id: "toggle-coordinate-units",
+    label: "Toggle Coordinate Units",
+    description:
+      "Switch the cursor position readout between voxel and physical coordinates.",
+  },
+  {
     id: "toggle-orthographic-projection",
     label: "Toggle Orthographic Projection",
     description:
@@ -203,6 +209,14 @@ const STATIC_COMMANDS: readonly BuiltinCommand[] = [
     id: "undo-annotation-step",
     label: "Undo Annotation Step",
     description: "Undo the last point added to the in-progress annotation.",
+  },
+  // Measurement. Only the keyboard-triggered action is declared: `measure-line`
+  // and `measure-box` begin a session from a mouse press and read the triggering
+  // event's coordinates, so they are not meaningfully invocable from the palette.
+  {
+    id: "clear-measurement",
+    label: "Clear Measurement",
+    description: "Remove the measurement line or box from the cross sections.",
   },
   // Actions with no default key binding; before the registry the palette had to
   // special-case these to surface them at all.

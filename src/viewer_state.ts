@@ -20,11 +20,16 @@ import type {
   SelectedLayerState,
   TrackableDataSelectionState,
 } from "#src/layer/index.js";
+import type { MeasurementState } from "#src/measurement_state.js";
 import type { NavigationState } from "#src/navigation_state.js";
 import type { RenderLayerRole } from "#src/renderlayer.js";
 import type { TrackableBoolean } from "#src/trackable_boolean.js";
-import type { WatchableSet } from "#src/trackable_value.js";
+import type {
+  WatchableSet,
+  WatchableValueInterface,
+} from "#src/trackable_value.js";
 import { VisibilityPrioritySpecification } from "#src/visibility_priority/frontend.js";
+import type { CoordinateDisplayMode } from "#src/widget/position_widget.js";
 
 export { VisibilityPrioritySpecification };
 
@@ -34,6 +39,8 @@ export interface ViewerState extends VisibilityPrioritySpecification {
   mouseState: MouseSelectionState;
   showAxisLines: TrackableBoolean;
   showCrossSectionHoverPosition: TrackableBoolean;
+  measurementState: MeasurementState;
+  coordinateDisplayMode: WatchableValueInterface<CoordinateDisplayMode>;
   layerManager: LayerManager;
   selectedLayer: SelectedLayerState;
   selectionDetailsState: TrackableDataSelectionState;

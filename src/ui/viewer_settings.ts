@@ -30,8 +30,10 @@ import {
 } from "#src/ui/side_panel_location.js";
 import type { vec3 } from "#src/util/geom.js";
 import { emptyToUndefined } from "#src/util/json.js";
+import type { TrackableEnum } from "#src/util/trackable_enum.js";
 import type { Viewer } from "#src/viewer.js";
 import { ColorWidget } from "#src/widget/color.js";
+import { EnumSelectWidget } from "#src/widget/enum_widget.js";
 import { NumberInputWidget } from "#src/widget/number_input_widget.js";
 import { TextInputWidget } from "#src/widget/text_input.js";
 
@@ -115,11 +117,22 @@ export class ViewerSettingsPanel extends SidePanel {
       labelElement.appendChild(checkbox.element);
       scroll.appendChild(labelElement);
     };
+    const addEnumDropdown = <T extends number>(
+      label: string,
+      model: TrackableEnum<T>,
+    ) => {
+      const labelElement = document.createElement("label");
+      labelElement.textContent = label;
+      const widget = this.registerDisposer(new EnumSelectWidget(model));
+      labelElement.appendChild(widget.element);
+      scroll.appendChild(labelElement);
+    };
     addCheckbox("Show axis lines", viewer.showAxisLines);
     addCheckbox(
       "Show hover position in all cross-sections",
       viewer.showCrossSectionHoverPosition,
     );
+    addEnumDropdown("Cursor position units", viewer.coordinateDisplayMode);
     addCheckbox("Show scale bar", viewer.showScaleBar);
     addCheckbox("Show cross sections in 3-d", viewer.showPerspectiveSliceViews);
     addCheckbox(
