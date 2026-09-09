@@ -297,4 +297,5 @@ registerAnnotationTypeRenderHandler<Line>(AnnotationType.LINE, {
     }
     return baseLine;
   },
+  isFullObjectPick: (partIndex) => partIndex === FULL_OBJECT_PICK_OFFSET,
 });
