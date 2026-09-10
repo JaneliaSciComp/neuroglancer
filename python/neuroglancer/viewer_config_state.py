@@ -335,8 +335,14 @@ class ConfigState(JsonObjectWrapper):
     show_selection_panel_button = showSelectionPanelButton = wrapped_property(
         "showSelectionPanelButton", optional(bool, True)
     )
+    show_copy_url_button = showCopyUrlButton = wrapped_property(
+        "showCopyUrlButton", optional(bool, True)
+    )
     show_panel_borders = showPanelBorders = wrapped_property(
         "showPanelBorders", optional(bool, True)
+    )
+    show_all_dimension_plot_bounds = showAllDimensionPlotBounds = wrapped_property(
+        "showAllDimensionPlotBounds", optional(bool, True)
     )
     pick_radius = pickRadius = wrapped_property("pickRadius", optional(int, 5))
     scale_bar_options = scaleBarOptions = wrapped_property(
