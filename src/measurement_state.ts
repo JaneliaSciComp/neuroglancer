@@ -15,9 +15,9 @@
  */
 
 /**
- * @file Transient state for the cross-section measurement tool (a ruler drawn
- * with alt+right-drag).  The measurement is not part of the serialized viewer
- * state; it exists only until the user starts a new one or presses Escape.
+ * @file Transient state for the cross-section measurement tools.  The
+ * measurement is not part of the serialized viewer state; it exists only until
+ * the user starts a new one or leaves the measurement mode.
  */
 
 import type { CoordinateSpace } from "#src/coordinate_transform.js";
@@ -40,11 +40,22 @@ export class MeasurementState extends RefCounted {
   // Cross-section orientation the measurement was drawn in, so it is only shown
   // in panels displaying the same plane.
   orientation: quat = quatModule.create();
-  // True while the user is actively dragging the second endpoint.
+  // True between the click that sets the start point and the one that finalizes
+  // the measurement, i.e. while the end point follows the cursor.
   active = false;
+  // The shape the user is currently armed to measure, or undefined when no
+  // measurement mode is active.  Owned by `MeasurementTool`, which sets it on
+  // activation and clears it on deactivation.
+  activeMeasurement: MeasurementShape | undefined = undefined;
 
   get isSet() {
     return this.startPosition !== undefined && this.endPosition !== undefined;
+  }
+
+  setActiveMeasurement(shape: MeasurementShape | undefined) {
+    if (this.activeMeasurement === shape) return;
+    this.activeMeasurement = shape;
+    this.changed.dispatch();
   }
 
   begin(
