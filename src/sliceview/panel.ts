@@ -21,7 +21,6 @@ import type { VisibleRenderLayerTracker } from "#src/layer/index.js";
 import { makeRenderedPanelVisibleLayerTracker } from "#src/layer/index.js";
 import type { NdcPoint } from "#src/measurement_line_render_helper.js";
 import { MeasurementLineRenderHelper } from "#src/measurement_line_render_helper.js";
-import type { MeasurementShape } from "#src/measurement_state.js";
 import { PickIDManager } from "#src/object_picking.js";
 import type { ProjectionParameters } from "#src/projection_parameters.js";
 import type {
@@ -67,6 +66,7 @@ import type { ShaderBuilder } from "#src/webgl/shader.js";
 import {
   CoordinateDisplayMode,
   formatPosition,
+  isTimeDimension,
 } from "#src/widget/position_widget.js";
 import type { TrackableScaleBarOptions } from "#src/widget/scale_bar.js";
 import { MultipleScaleBarTextures } from "#src/widget/scale_bar.js";
@@ -128,6 +128,15 @@ const MEASURE_PLANE_MATCH_TOLERANCE_DEGREES = 5;
 const MEASURE_PLANE_MATCH_MIN_COS = Math.cos(
   (MEASURE_PLANE_MATCH_TOLERANCE_DEGREES * Math.PI) / 180,
 );
+
+// Half the length, in panel pixels, of the tick drawn perpendicular to a
+// measurement line at each of its endpoints.
+const MEASURE_END_MARKER_HALF_LENGTH = 5;
+// Distance in panel pixels from an endpoint to its coordinate label.
+const MEASURE_LABEL_OFFSET = 16;
+// Slack in panel pixels required between the two endpoint coordinate labels;
+// they count as colliding, and get stacked instead, once they are closer.
+const MEASURE_LABEL_OVERLAP_PADDING = 2;
 
 // Given the cursor position (in element pixels) and the panel size, returns the
 // [deltaX, deltaY] to feed to `translateByViewportPixels` so the view scrolls to
@@ -196,19 +205,24 @@ function clampPositionToBounds(
 // following the cursor coordinate-display mode so the ruler and the cursor
 // readout always agree.  In PHYSICAL mode the per-dimension voxel deltas are
 // scaled before being combined; the length is reported in the first calibrated
-// dimension's unit.  A coordinate space with no units at all falls back to
-// voxels regardless of the mode.
+// spatial dimension's unit.  A coordinate space with no units at all falls back
+// to voxels regardless of the mode.
+//
+// Time dimensions are excluded: a measurement is a spatial distance, and if the
+// timepoint were changed between the two clicks its delta would otherwise be
+// folded into the length.
 function formatMeasurementLength(
   start: Float32Array,
   end: Float32Array,
   coordinateSpace: CoordinateSpace,
   mode: CoordinateDisplayMode,
 ): string {
-  const { rank, scales, units } = coordinateSpace;
+  const { rank, names, scales, units } = coordinateSpace;
   let voxelSq = 0;
   let physicalSq = 0;
   let unit = "";
   for (let i = 0; i < rank; ++i) {
+    if (isTimeDimension(names[i], units[i])) continue;
     const d = end[i] - start[i];
     voxelSq += d * d;
     const p = d * scales[i];
@@ -242,8 +256,9 @@ export class SliceViewPanel extends RenderedDataPanel {
   private measurementLabel: HTMLDivElement;
   private measurementStartLabel: HTMLDivElement;
   private measurementEndLabel: HTMLDivElement;
-  // Active measurement session, if any (see `beginMeasurementSession`).
-  private measureSession: { cleanup: () => void } | undefined;
+  // Reused scratch for the clamped end point (`MeasurementState.update` copies
+  // it).  Sized lazily to the global coordinate space rank.
+  private measurementClampedEnd: Float32Array | undefined;
 
   private colorFactor = vec4.fromValues(1, 1, 1, 1);
   private pickIDs = new PickIDManager();
@@ -345,7 +360,6 @@ export class SliceViewPanel extends RenderedDataPanel {
     this.measurementLabel.style.transform = "translate(-50%, -150%)";
     this.measurementStartLabel = makeMeasurementLabel();
     this.measurementEndLabel = makeMeasurementLabel();
-    this.registerDisposer(() => this.measureSession?.cleanup());
     this.registerDisposer(
       viewer.measurementState.changed.add(() => {
         if (this.visible) this.scheduleRedraw();
@@ -356,22 +370,27 @@ export class SliceViewPanel extends RenderedDataPanel {
         if (this.visible) this.scheduleRedraw();
       }),
     );
-    registerActionListener(
-      element,
-      "measure-line",
-      (e: ActionEvent<MouseEvent>) =>
-        this.beginMeasurementSession(e, "line", 0 /* left button */),
+    registerActionListener(element, "measure-place-point", () =>
+      this.placeMeasurementPoint(),
     );
-    registerActionListener(
-      element,
-      "measure-box",
-      (e: ActionEvent<MouseEvent>) =>
-        this.beginMeasurementSession(e, "box", 2 /* right button */),
+    // Rubber-band the end point while a measurement is being drawn.
+    // `mouseState.changed` already fires as the cursor moves over a panel (it
+    // is what drives the top bar readout), so no pointer listeners are needed.
+    this.registerDisposer(
+      viewer.mouseState.changed.add(() => {
+        const { measurementState } = this.viewer;
+        if (!measurementState.active) return;
+        // Only the panel the measurement was started in should track the
+        // cursor, otherwise moving over another panel would drag the end point
+        // out of the measurement's plane.
+        if (!this.showMeasurementInThisPanel()) return;
+        // Only auto-pan while the cursor is still inside the volume; once it
+        // leaves, the end point clamps to the boundary and the view holds.
+        if (this.updateMeasurementEnd(/*force=*/ false)) {
+          this.doMeasurementEdgePan();
+        }
+      }),
     );
-    registerActionListener(element, "clear-measurement", () => {
-      this.measureSession?.cleanup();
-      this.viewer.measurementState.clear();
-    });
 
     registerActionListener(
       element,
@@ -647,6 +666,7 @@ export class SliceViewPanel extends RenderedDataPanel {
           draw(d, a);
         } else {
           draw(a, b);
+          this.drawMeasurementEndMarkers(projectionParameters, a, b);
         }
       }
       if (this.viewer.showScaleBar.value) {
@@ -678,124 +698,75 @@ export class SliceViewPanel extends RenderedDataPanel {
     return true;
   }
 
-  // Starts a measurement *session* for the given shape.  Both shapes share the
-  // shift+alt chord and differ only by button: left draws a line, right draws a
-  // box.  The session stays alive as long as the alt key is held: pressing the
-  // trigger button positions the end point/opposite corner, releasing the button
-  // merely pauses (the end freezes), and pressing again resumes -- convenient on
-  // a trackpad where holding a press through a drag is awkward.  The measurement
-  // is finalized only once alt is released *and* the button is up.  (Shift is
-  // only needed to start; releasing it mid-session does not end the session.)  A
-  // press that reaches this handler while a session is already active is handled
-  // by the session's own listeners, so it is ignored here.
-  private beginMeasurementSession(
-    e: ActionEvent<MouseEvent>,
-    shape: MeasurementShape,
-    button: number,
-  ) {
-    if (this.measureSession !== undefined) return;
-    const { element } = this;
+  // Places a measurement point at the cursor.  Dispatched by the left button
+  // while a measurement mode is armed (see `MeasurementTool`): the first click
+  // sets the start point, the second finalizes.  The mode stays armed
+  // afterwards, so the next click starts a fresh measurement.
+  private placeMeasurementPoint() {
     const { mouseState, measurementState } = this.viewer;
-    this.handleMouseMove(e.detail.clientX, e.detail.clientY);
+    const shape = measurementState.activeMeasurement;
+    if (shape === undefined) return;
     if (!mouseState.updateUnconditionally()) return;
-    measurementState.begin(
-      shape,
-      mouseState.position,
-      this.navigationState.pose.orientation.orientation,
-      this.navigationState.coordinateSpace.value,
-    );
-    const { document: doc } = e.detail.view!;
-    const session = { buttonDown: true, altHeld: true };
-    // Reused scratch for the clamped endpoint (`update` copies it).
-    let clampedEnd = new Float32Array(mouseState.position.length);
-    // Updates the end point to follow the cursor, clamped to the volume bounding
-    // box.  Returns whether the cursor was inside the volume; when it is outside,
-    // the end point sticks to the boundary and this returns false so callers can
-    // stop auto-panning past the edge of the data.
-    const updateEnd = (): boolean => {
-      if (!mouseState.updateUnconditionally()) return false;
-      const { position } = mouseState;
-      if (clampedEnd.length !== position.length) {
-        clampedEnd = new Float32Array(position.length);
-      }
-      const inBounds = clampPositionToBounds(
-        clampedEnd,
-        position,
+    if (measurementState.active) {
+      this.updateMeasurementEnd(/*force=*/ true);
+      measurementState.finish();
+    } else {
+      measurementState.begin(
+        shape,
+        mouseState.position,
+        this.navigationState.pose.orientation.orientation,
         this.navigationState.coordinateSpace.value,
       );
-      measurementState.update(clampedEnd);
-      return inBounds;
-    };
-    // While the button is held and the cursor sits on a panel edge, scroll the
-    // view to reveal content past that edge so the measurement can be extended
-    // beyond the visible area.  Panning is driven by pointermove events, so it
-    // only happens while the user is actively moving the mouse -- resting the
-    // cursor at the edge does not keep scrolling the view.
-    const doEdgePan = () => {
-      if (!session.buttonDown) return;
-      const [vx, vy] = computeEdgePanVelocity(
-        this.mouseX,
-        this.mouseY,
-        element.offsetWidth,
-        element.offsetHeight,
+    }
+  }
+
+  // Moves the end point to the cursor, clamped to the volume bounding box.
+  // Returns whether the cursor was inside the volume; when it is outside, the
+  // end point sticks to the boundary and this returns false so the caller can
+  // stop auto-panning past the edge of the data.
+  //
+  // `force` requests a synchronous pick, which is needed when responding to a
+  // click.  It must NOT be set when responding to `mouseState.changed`:
+  // `updateUnconditionally` completes the pending pick, which dispatches
+  // `changed` again, and the handler would recurse until the stack overflowed.
+  // The position is already current whenever `changed` fires, so reading it is
+  // both sufficient and safe.
+  private updateMeasurementEnd(force: boolean): boolean {
+    const { mouseState, measurementState } = this.viewer;
+    if (force ? !mouseState.updateUnconditionally() : !mouseState.active) {
+      return false;
+    }
+    const { position } = mouseState;
+    let { measurementClampedEnd: clampedEnd } = this;
+    if (clampedEnd === undefined || clampedEnd.length !== position.length) {
+      clampedEnd = this.measurementClampedEnd = new Float32Array(
+        position.length,
       );
-      if (vx === 0 && vy === 0) return;
-      this.context.flagContinuousCameraMotion();
-      this.translateByViewportPixels(vx, vy);
-      this.scheduleRedraw();
-    };
-    const onMove = (event: PointerEvent) => {
-      session.altHeld = event.altKey;
-      this.handleMouseMove(event.clientX, event.clientY);
-      if (session.buttonDown) {
-        // Only auto-pan while the cursor is still inside the volume; once it
-        // leaves, the end point clamps to the boundary and the view holds.
-        if (updateEnd()) doEdgePan();
-      }
-      maybeFinish();
-    };
-    const onDown = (event: PointerEvent) => {
-      if (event.button !== button) return;
-      session.buttonDown = true;
-      session.altHeld = event.altKey;
-      this.handleMouseMove(event.clientX, event.clientY);
-      updateEnd();
-    };
-    const onUp = (event: PointerEvent) => {
-      if (event.button !== button) return;
-      session.buttonDown = false;
-      session.altHeld = event.altKey;
-      maybeFinish();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      session.altHeld = event.altKey;
-      maybeFinish();
-    };
-    const preventContextMenu = (event: Event) => event.preventDefault();
-    const cleanup = () => {
-      doc.removeEventListener("pointermove", onMove, true);
-      doc.removeEventListener("pointerdown", onDown, true);
-      doc.removeEventListener("pointerup", onUp, true);
-      doc.removeEventListener("keydown", onKey, true);
-      doc.removeEventListener("keyup", onKey, true);
-      doc.removeEventListener("contextmenu", preventContextMenu, true);
-      this.measureSession = undefined;
-    };
-    const maybeFinish = () => {
-      // Terminate only when neither the alt key nor the trigger button is
-      // engaged.
-      if (!session.buttonDown && !session.altHeld) {
-        cleanup();
-        measurementState.finish();
-      }
-    };
-    this.measureSession = { cleanup };
-    doc.addEventListener("pointermove", onMove, true);
-    doc.addEventListener("pointerdown", onDown, true);
-    doc.addEventListener("pointerup", onUp, true);
-    doc.addEventListener("keydown", onKey, true);
-    doc.addEventListener("keyup", onKey, true);
-    doc.addEventListener("contextmenu", preventContextMenu, true);
+    }
+    const inBounds = clampPositionToBounds(
+      clampedEnd,
+      position,
+      this.navigationState.coordinateSpace.value,
+    );
+    measurementState.update(clampedEnd);
+    return inBounds;
+  }
+
+  // While a measurement is being drawn and the cursor sits in the band along a
+  // panel edge, scroll the view to reveal content past that edge so the
+  // measurement can extend beyond the visible area.  Driven by cursor movement,
+  // so resting the cursor at the edge does not keep scrolling the view.
+  private doMeasurementEdgePan() {
+    const [vx, vy] = computeEdgePanVelocity(
+      this.mouseX,
+      this.mouseY,
+      this.element.offsetWidth,
+      this.element.offsetHeight,
+    );
+    if (vx === 0 && vy === 0) return;
+    this.context.flagContinuousCameraMotion();
+    this.translateByViewportPixels(vx, vy);
+    this.scheduleRedraw();
   }
 
   // A measurement is shown only in panels displaying (nearly) the plane it was
@@ -858,6 +829,55 @@ export class SliceViewPanel extends RenderedDataPanel {
     ];
   }
 
+  // Inverse of `ndcToPixels`.
+  private pixelsToNdc(
+    projectionParameters: ProjectionParameters,
+    x: number,
+    y: number,
+  ): NdcPoint {
+    return [
+      (x / projectionParameters.logicalWidth) * 2 - 1,
+      1 - (y / projectionParameters.logicalHeight) * 2,
+    ];
+  }
+
+  // Draws a short tick perpendicular to the segment at each endpoint, so the
+  // measured extent is unambiguous rather than fading into the image at the
+  // ends.  The geometry is computed in pixels and converted back to normalized
+  // device coordinates, so the ticks are a constant on-screen length and
+  // genuinely perpendicular whatever the panel's aspect ratio -- doing it
+  // directly in NDC would skew and stretch them.
+  private drawMeasurementEndMarkers(
+    projectionParameters: ProjectionParameters,
+    a: NdcPoint,
+    b: NdcPoint,
+  ) {
+    const [ax, ay] = this.ndcToPixels(projectionParameters, a);
+    const [bx, by] = this.ndcToPixels(projectionParameters, b);
+    let dx = bx - ax;
+    let dy = by - ay;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-3) {
+      // Degenerate measurement: no direction, so use a vertical tick.
+      dx = 1;
+      dy = 0;
+    } else {
+      dx /= len;
+      dy /= len;
+    }
+    // Perpendicular, scaled to half the marker length.
+    const nx = -dy * MEASURE_END_MARKER_HALF_LENGTH;
+    const ny = dx * MEASURE_END_MARKER_HALF_LENGTH;
+    const tick = (cx: number, cy: number) =>
+      this.measurementLineHelper.draw(
+        this.pixelsToNdc(projectionParameters, cx - nx, cy - ny),
+        this.pixelsToNdc(projectionParameters, cx + nx, cy + ny),
+        this.measurementColor,
+      );
+    tick(ax, ay);
+    tick(bx, by);
+  }
+
   private updateMeasurementLabel(
     projectionParameters: ProjectionParameters,
     show: boolean,
@@ -903,37 +923,65 @@ export class SliceViewPanel extends RenderedDataPanel {
       label.style.top = `${my}px`;
       label.style.display = "";
     }
-    // Place each endpoint's coordinate label just outside its end, offset along
-    // the line direction (away from the midpoint) so it does not cover the line.
-    const OFFSET = 16;
-    const placeEndpoint = (
-      endpointLabel: HTMLDivElement,
-      text: string,
-      px: number,
-      py: number,
-    ) => {
-      endpointLabel.textContent = text;
+    // Each endpoint label normally sits just beyond its end, offset along the
+    // line direction (away from the midpoint) so it does not cover the line.
+    startLabel.textContent = formatPosition(start, coordinateSpace, mode, {
+      omitTime: true,
+    });
+    endLabel.textContent = formatPosition(end, coordinateSpace, mode, {
+      omitTime: true,
+    });
+    startLabel.style.display = "";
+    endLabel.style.display = "";
+    const preferred = (px: number, py: number): [number, number] => {
       let dx = px - mx;
       let dy = py - my;
       const len = Math.hypot(dx, dy);
       if (len < 1e-3) {
+        // Degenerate measurement: no direction to offset along.
         dx = 0;
         dy = -1;
       } else {
         dx /= len;
         dy /= len;
       }
-      endpointLabel.style.left = `${px + dx * OFFSET}px`;
-      endpointLabel.style.top = `${py + dy * OFFSET}px`;
-      endpointLabel.style.display = "";
+      return [px + dx * MEASURE_LABEL_OFFSET, py + dy * MEASURE_LABEL_OFFSET];
     };
-    placeEndpoint(
-      startLabel,
-      formatPosition(start, coordinateSpace, mode),
-      sx,
-      sy,
-    );
-    placeEndpoint(endLabel, formatPosition(end, coordinateSpace, mode), ex, ey);
+    let [startX, startY] = preferred(sx, sy);
+    let [endX, endY] = preferred(ex, ey);
+    // The labels are centered on their position (`translate(-50%, -50%)`), so
+    // the measured border-box size gives their extent about that point.  Reading
+    // it here forces a layout, but only twice per frame and only while a
+    // measurement is on screen.
+    const startW = startLabel.offsetWidth;
+    const startH = startLabel.offsetHeight;
+    const endW = endLabel.offsetWidth;
+    const endH = endLabel.offsetHeight;
+    // Whether the two label boxes would collide at their preferred positions.
+    // This is the actual condition to avoid, rather than a proxy such as the
+    // segment being near-horizontal: a steep segment can collide too if it is
+    // short, and a shallow one need not collide if it is long.
+    const collides =
+      Math.abs(startX - endX) * 2 <
+        startW + endW + 2 * MEASURE_LABEL_OVERLAP_PADDING &&
+      Math.abs(startY - endY) * 2 <
+        startH + endH + 2 * MEASURE_LABEL_OVERLAP_PADDING;
+    if (collides) {
+      // Drop both labels below their endpoints and stack them, the start label
+      // on the upper row.  Keying the row off start/end rather than screen
+      // position keeps the stack from flipping while the segment is drawn.  The
+      // step is derived from the measured heights so the two cannot collide
+      // again after being moved.
+      const step = Math.max(startH, endH) + MEASURE_LABEL_OVERLAP_PADDING * 2;
+      startX = sx;
+      startY = sy + MEASURE_LABEL_OFFSET;
+      endX = ex;
+      endY = ey + MEASURE_LABEL_OFFSET + step;
+    }
+    startLabel.style.left = `${startX}px`;
+    startLabel.style.top = `${startY}px`;
+    endLabel.style.left = `${endX}px`;
+    endLabel.style.top = `${endY}px`;
   }
 
   ensureBoundsUpdated() {

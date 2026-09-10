@@ -56,6 +56,7 @@ import {
 import { LayerGroupViewer } from "#src/layer_group_viewer.js";
 import { RootLayoutContainer } from "#src/layer_groups_layout.js";
 import { MeasurementState } from "#src/measurement_state.js";
+import { MeasurementTool } from "#src/measurement_tool.js";
 import {
   CoordinateSpacePlaybackVelocity,
   DisplayPose,
@@ -1255,6 +1256,14 @@ export class Viewer extends RefCounted implements ViewerState {
         1500,
       );
     });
+    // Activate a measurement tool; it stays active until escape (deactivate-active-tool)
+    // or until the other mode another tool is selected
+    this.bindAction("measure-line-mode", () =>
+      this.globalToolBinder.activateDirect(new MeasurementTool(this, "line")),
+    );
+    this.bindAction("measure-box-mode", () =>
+      this.globalToolBinder.activateDirect(new MeasurementTool(this, "box")),
+    );
     this.bindAction("toggle-scale-bar", () => this.showScaleBar.toggle());
     this.bindAction("toggle-default-annotations", () =>
       this.showDefaultAnnotations.toggle(),

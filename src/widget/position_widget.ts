@@ -1387,6 +1387,27 @@ export function formatCoordinate(
 }
 
 /**
+ * Whether a coordinate space dimension measures time rather than space.
+ *
+ * A calibrated time axis carries seconds as its unit -- every supported time
+ * unit (ms, µs, ...) normalizes to `"s"` with a scale -- which is the reliable
+ * signal.  An *uncalibrated* axis has no unit at all, so fall back to the
+ * conventional name `t` there (any local `'` or channel `^` suffix stripped).
+ */
+export function isTimeDimension(name: string, unit: string): boolean {
+  if (unit === "s") return true;
+  return unit === "" && name.replace(/['^]+$/, "") === "t";
+}
+
+export interface FormatPositionOptions {
+  /**
+   * Omit time dimensions from the output.  Used for measurement labels, where a
+   * timepoint is not part of the geometry being measured.
+   */
+  omitTime?: boolean;
+}
+
+/**
  * Formats every dimension of `position` as `<name> <coordinate>`, joined by two
  * spaces.
  */
@@ -1394,10 +1415,13 @@ export function formatPosition(
   position: Float32Array | Float64Array,
   coordinateSpace: CoordinateSpace,
   mode: CoordinateDisplayMode,
+  options: FormatPositionOptions = {},
 ): string {
   const { rank, names, scales, units } = coordinateSpace;
+  const { omitTime = false } = options;
   const parts: string[] = [];
   for (let i = 0; i < rank; ++i) {
+    if (omitTime && isTimeDimension(names[i], units[i])) continue;
     parts.push(
       `${names[i]} ${formatCoordinate(position[i], scales[i], units[i], mode)}`,
     );

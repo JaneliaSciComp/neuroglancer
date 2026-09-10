@@ -30,6 +30,8 @@ export function getDefaultGlobalBindings() {
     map.set("keya", "toggle-axis-lines");
     map.set("keyu", "toggle-coordinate-units");
     map.set("keyo", "toggle-orthographic-projection");
+    map.set("control+keyl", "measure-line-mode");
+    map.set("control+keyb", "measure-box-mode");
 
     for (let i = 1; i <= 9; ++i) {
       map.set("digit" + i, "toggle-layer-" + i);
@@ -119,11 +121,8 @@ export function getDefaultRenderedDataPanelBindings() {
         "at:shift+dblclick0": "star",
         "at:control+mousedown0": "annotate",
         "at:mousedown2": "move-to-mouse-position",
-        "at:shift+alt+mousedown0": "measure-line",
-        "at:shift+alt+mousedown2": "measure-box",
         "at:alt+mousedown0": "move-annotation",
         "at:control+alt+mousedown2": "delete-annotation",
-        escape: "clear-measurement",
         enter: "finish-annotation",
         backspace: "undo-annotation-step",
         "at:touchpinch": "zoom-via-touchpinch",

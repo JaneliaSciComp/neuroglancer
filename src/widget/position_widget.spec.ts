@@ -20,6 +20,7 @@ import {
   CoordinateDisplayMode,
   formatCoordinate,
   formatPosition,
+  isTimeDimension,
 } from "#src/widget/position_widget.js";
 
 const { VOXEL, PHYSICAL } = CoordinateDisplayMode;
@@ -94,5 +95,60 @@ describe("formatPosition", () => {
     expect(formatPosition(Float32Array.of(512, 3), mixed, PHYSICAL)).toEqual(
       "x 4.096µm  c 3",
     );
+  });
+
+  it("keeps time dimensions by default and drops them with omitTime", () => {
+    const withTime = makeCoordinateSpace({
+      names: ["t", "z", "y", "x"],
+      scales: Float64Array.of(1e-3, 30e-9, 8e-9, 8e-9),
+      units: ["s", "m", "m", "m"],
+    });
+    const p = Float32Array.of(7, 30, 1024, 512);
+    // The cursor readout still shows everything.
+    expect(formatPosition(p, withTime, VOXEL)).toEqual(
+      "t 7  z 30  y 1024  x 512",
+    );
+    // Measurement labels omit the timepoint.
+    expect(formatPosition(p, withTime, VOXEL, { omitTime: true })).toEqual(
+      "z 30  y 1024  x 512",
+    );
+    expect(formatPosition(p, withTime, PHYSICAL, { omitTime: true })).toEqual(
+      "z 900nm  y 8.192µm  x 4.096µm",
+    );
+  });
+
+  it("drops an uncalibrated t axis with omitTime", () => {
+    const untimed = makeCoordinateSpace({
+      names: ["x", "y", "t"],
+      scales: Float64Array.of(8e-9, 8e-9, 1),
+      units: ["m", "m", ""],
+    });
+    expect(
+      formatPosition(Float32Array.of(512, 1024, 3), untimed, VOXEL, {
+        omitTime: true,
+      }),
+    ).toEqual("x 512  y 1024");
+  });
+});
+
+describe("isTimeDimension", () => {
+  it("recognizes any dimension calibrated in seconds", () => {
+    // Every supported time unit normalizes to "s" with a scale.
+    expect(isTimeDimension("t", "s")).toBe(true);
+    expect(isTimeDimension("time", "s")).toBe(true);
+  });
+
+  it("recognizes an uncalibrated axis named t", () => {
+    expect(isTimeDimension("t", "")).toBe(true);
+    expect(isTimeDimension("t'", "")).toBe(true);
+    expect(isTimeDimension("t^", "")).toBe(true);
+  });
+
+  it("does not treat spatial or channel dimensions as time", () => {
+    expect(isTimeDimension("x", "m")).toBe(false);
+    expect(isTimeDimension("z", "m")).toBe(false);
+    expect(isTimeDimension("c'", "")).toBe(false);
+    // A name merely starting with t is not a time axis.
+    expect(isTimeDimension("theta", "")).toBe(false);
   });
 });
