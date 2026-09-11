@@ -1066,9 +1066,7 @@ export class SegmentationUserLayer extends Base {
     x[json_keys.MESH_SILHOUETTE_RENDERING_JSON_KEY] =
       this.displayState.silhouetteRendering.toJSON();
     x[json_keys.CROSS_SECTION_OUTLINE_JSON_KEY] =
-      this.displayState.crossSectionOutline
-      .toJSON()
-      ?.toString();
+      this.displayState.crossSectionOutline.toJSON();
     x[json_keys.ANCHOR_SEGMENT_JSON_KEY] = this.anchorSegment
       .toJSON()
       ?.toString();
