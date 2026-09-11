@@ -88,6 +88,14 @@ export const LAYER_CONTROLS: LayerControlDefinition<SegmentationUserLayer>[] = [
     })),
   },
   {
+    label: "Outline (slice)",
+    toolJson: json_keys.CROSS_SECTION_OUTLINE_JSON_KEY,
+    title: "Render only segment boundaries in cross-section views",
+    ...checkboxLayerControl(
+      (layer) => layer.displayState.crossSectionOutline,
+    ),
+  },
+  {
     label: "Hide segment ID 0",
     toolJson: json_keys.HIDE_SEGMENT_ZERO_JSON_KEY,
     title: "Disallow selection and display of segment id 0",

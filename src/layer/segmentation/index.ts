@@ -534,6 +534,7 @@ class SegmentationUserLayerDisplayState implements SegmentationDisplayState {
   );
   objectAlpha = trackableAlphaValue(1.0);
   ignoreNullVisibleSet = new TrackableBoolean(true, true);
+  crossSectionOutline = new TrackableBoolean(false, false);
   skeletonRenderingOptions = new SkeletonRenderingOptions();
   shaderError = makeWatchableShaderError();
   renderScaleHistogram = new RenderScaleHistogram();
@@ -668,6 +669,9 @@ export class SegmentationUserLayer extends Base {
       this.specificationChanged.dispatch,
     );
     this.displayState.ignoreNullVisibleSet.changed.add(
+      this.specificationChanged.dispatch,
+    );
+    this.displayState.crossSectionOutline.changed.add(
       this.specificationChanged.dispatch,
     );
     this.displayState.skeletonRenderingOptions.changed.add(
@@ -996,6 +1000,9 @@ export class SegmentationUserLayer extends Base {
     this.displayState.ignoreNullVisibleSet.restoreState(
       specification[json_keys.IGNORE_NULL_VISIBLE_SET_JSON_KEY],
     );
+    this.displayState.crossSectionOutline.restoreState(
+      specification[json_keys.CROSS_SECTION_OUTLINE_JSON_KEY],
+    );
 
     const { skeletonRenderingOptions } = this.displayState;
     skeletonRenderingOptions.restoreState(
@@ -1058,6 +1065,10 @@ export class SegmentationUserLayer extends Base {
       this.displayState.ignoreNullVisibleSet.toJSON();
     x[json_keys.MESH_SILHOUETTE_RENDERING_JSON_KEY] =
       this.displayState.silhouetteRendering.toJSON();
+    x[json_keys.CROSS_SECTION_OUTLINE_JSON_KEY] =
+      this.displayState.crossSectionOutline
+      .toJSON()
+      ?.toString();
     x[json_keys.ANCHOR_SEGMENT_JSON_KEY] = this.anchorSegment
       .toJSON()
       ?.toString();
