@@ -94,17 +94,65 @@ export interface FitSettings {
 }
 
 /**
+ * Returns the global coordinates, along each display dimension, of the center of the voxel of the
+ * finest visible source that contains `position`.  Returns `undefined` if no source is visible.
+ *
+ * ponytail: centers along the chunk dimension each display dimension mostly maps to.  Exact for
+ * axis-aligned transforms (any permutation, scale or translation); under a rotated model transform
+ * the samples are only near voxel centers, so the patch is a nearest-voxel resample, off by up to
+ * half a voxel per sample.
+ */
+function getVoxelCenter(
+  renderLayer: ImageRenderLayer,
+  position: Float32Array,
+  displayDimensionIndices: Int32Array,
+): [number, number, number] | undefined {
+  // Sorted finest first.
+  const finest = renderLayer.visibleSourcesList[0];
+  if (finest === undefined) return undefined;
+  const { layerRank, combinedGlobalLocalToChunkTransform: m } =
+    finest.chunkTransform;
+  const chunkPosition = new Float32Array(layerRank);
+  getChunkPositionFromCombinedGlobalLocalPositions(
+    chunkPosition,
+    position,
+    renderLayer.localPosition.value,
+    layerRank,
+    m,
+  );
+  const result: [number, number, number] = [0, 0, 0];
+  for (let k = 0; k < 3; ++k) {
+    const globalDim = displayDimensionIndices[k];
+    let chunkDim = 0;
+    for (let c = 1; c < layerRank; ++c) {
+      if (
+        Math.abs(m[c + globalDim * layerRank]) >
+        Math.abs(m[chunkDim + globalDim * layerRank])
+      ) {
+        chunkDim = c;
+      }
+    }
+    const scale = m[chunkDim + globalDim * layerRank];
+    if (scale === 0) return undefined;
+    const p = chunkPosition[chunkDim];
+    result[k] = position[globalDim] + (Math.floor(p) + 0.5 - p) / scale;
+  }
+  return result;
+}
+
+/**
  * Samples a cube of image intensity centered on `center`, aligned to the three display dimensions
  * with a spacing of one unit of the global coordinate space.
  *
  * Sampling in global coordinates, rather than in the image's chunk coordinates, means the fitted
  * center is produced directly in the global space and needs no inverse transform to get back out.
  *
- * Samples are taken at voxel *centers*.  `getValueAt` floors the position to get a voxel index, so
- * voxel `i` spans the continuous interval `[i, i+1)` and is centered at `i + 0.5`.  The returned
- * `origin` is therefore the half-integer coordinate of sample `[0,0,0]`, which lets the caller map
- * a fractional patch index straight back to a continuous coordinate by adding the two.  Getting
- * this wrong biases every fitted point by half a voxel on each axis.
+ * Samples are taken at voxel *centers*, as placed by the image's own transform: precomputed puts
+ * voxel corners on integer global coordinates (centers at `i + 0.5`), OME-Zarr puts voxel centers
+ * there (centers at `i`).  The returned `origin` is the global coordinate of sample `[0,0,0]`,
+ * which lets the caller map a fractional patch index straight back to a continuous coordinate by
+ * adding the two.  Getting this wrong biases every fitted point by half a voxel on each axis, and
+ * leaves samples on voxel boundaries where float rounding picks the voxel.
  *
  * Returns `undefined` if fewer than half the samples could be read, which is the case when the
  * region has not been loaded.
@@ -115,13 +163,16 @@ export function samplePatch(
   displayDimensionIndices: Int32Array,
   radius: number,
 ): { patch: VoxelPatch; origin: [number, number, number] } | undefined {
+  // A rank < 3 display space cannot support a 3-d fit.
+  if (displayDimensionIndices.includes(-1)) return undefined;
+  const voxelCenter = getVoxelCenter(
+    renderLayer,
+    center,
+    displayDimensionIndices,
+  );
+  if (voxelCenter === undefined) return undefined;
   const origin: [number, number, number] = [0, 0, 0];
-  for (let k = 0; k < 3; ++k) {
-    const globalDim = displayDimensionIndices[k];
-    // A rank < 3 display space cannot support a 3-d fit.
-    if (globalDim === -1) return undefined;
-    origin[k] = Math.floor(center[globalDim]) - radius + 0.5;
-  }
+  for (let k = 0; k < 3; ++k) origin[k] = voxelCenter[k] - radius;
   const n = 2 * radius + 1;
   const position = Float32Array.from(center);
   const data = new Float32Array(n * n * n);

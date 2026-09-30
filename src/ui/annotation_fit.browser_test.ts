@@ -24,17 +24,39 @@ const DISPLAY_DIMS = Int32Array.from([0, 1, 2]);
 
 /**
  * Stands in for an image render layer.  Mirrors `VolumeChunkSource.getValueAt`, which floors the
- * continuous position to a voxel index: voxel `i` covers `[i, i+1)` and is centered at `i + 0.5`.
+ * chunk position to a voxel index, with `chunk = global + chunkOffset`.  `chunkOffset` 0 is the
+ * precomputed convention (voxel `i` covers `[i, i+1)`, centered at `i + 0.5`); 0.5 is OME-Zarr's
+ * (voxel `i` covers `[i-0.5, i+0.5)`, centered at `i`).
  */
 function makeStubLayer(
   valueForVoxel: (i: number, j: number, k: number) => number | null,
+  chunkOffset = 0,
 ) {
+  // Identity 3x3 global->chunk, then the translation column.
+  const combinedGlobalLocalToChunkTransform = Float32Array.from([
+    1,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    1,
+    chunkOffset,
+    chunkOffset,
+    chunkOffset,
+  ]);
   return {
+    localPosition: { value: new Float32Array(0) },
+    visibleSourcesList: [
+      { chunkTransform: { layerRank: 3, combinedGlobalLocalToChunkTransform } },
+    ],
     getValueAt(position: Float32Array) {
       return valueForVoxel(
-        Math.floor(position[0]),
-        Math.floor(position[1]),
-        Math.floor(position[2]),
+        Math.floor(position[0] + chunkOffset),
+        Math.floor(position[1] + chunkOffset),
+        Math.floor(position[2] + chunkOffset),
       );
     },
   } as unknown as ImageRenderLayer;
@@ -88,6 +110,43 @@ describe("samplePatch", () => {
         1e-4,
       );
     }
+  });
+
+  it("recovers the true center under the OME-Zarr voxel-center convention", () => {
+    const center = [16.3, 20.7, 24.2];
+    const sigma = 2.5;
+    // Voxel `i` is centered at `i`.
+    const layer = makeStubLayer((i, j, k) => {
+      if (i < 0 || j < 0 || k < 0 || i >= 64 || j >= 64 || k >= 64) return null;
+      const d2 =
+        (i - center[0]) ** 2 + (j - center[1]) ** 2 + (k - center[2]) ** 2;
+      return 8 + 230 * Math.exp(-d2 / (2 * sigma * sigma));
+    }, 0.5);
+    const sampled = samplePatch(
+      layer,
+      Float32Array.from([17.75, 22, 24]),
+      DISPLAY_DIMS,
+      5,
+    )!;
+    // The click at 17.75 falls inside voxel 18 (covering [17.5, 18.5)), so origin is 18 - 5.
+    expect(sampled.origin).toEqual([13, 17, 19]);
+    const fit = gaussianNonlinearFitter(sampled.patch)!;
+    expect(fit).toBeDefined();
+    for (let k = 0; k < 3; ++k) {
+      expect(Math.abs(sampled.origin[k] + fit[k] - center[k])).toBeLessThan(
+        1e-4,
+      );
+    }
+  });
+
+  it("returns undefined when no source is visible", () => {
+    const layer = {
+      ...makeStubLayer(() => 1),
+      visibleSourcesList: [],
+    } as unknown as ImageRenderLayer;
+    expect(
+      samplePatch(layer, Float32Array.from([10, 10, 10]), DISPLAY_DIMS, 3),
+    ).toBeUndefined();
   });
 
   it("returns undefined when most samples are unavailable", () => {
