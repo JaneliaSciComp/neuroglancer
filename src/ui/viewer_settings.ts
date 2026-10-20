@@ -127,6 +127,7 @@ export class ViewerSettingsPanel extends SidePanel {
       labelElement.appendChild(widget.element);
       scroll.appendChild(labelElement);
     };
+    addCheckbox("Show layer bar", viewer.layerPanelVisibility);
     addCheckbox("Show axis lines", viewer.showAxisLines);
     addCheckbox(
       "Show hover position in all cross-sections",
