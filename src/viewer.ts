@@ -95,7 +95,10 @@ import {
 import { LayerSidePanelManager } from "#src/ui/layer_side_panel.js";
 import { setupPositionDropHandlers } from "#src/ui/position_drag_and_drop.js";
 import { ScreenshotDialog } from "#src/ui/screenshot_menu.js";
-import { SelectionDetailsPanel } from "#src/ui/selection_details.js";
+import {
+  copySelectionPositionToClipboard,
+  SelectionDetailsPanel,
+} from "#src/ui/selection_details.js";
 import { SidePanelManager } from "#src/ui/side_panel.js";
 import { StateEditorDialog } from "#src/ui/state_editor.js";
 import { StatisticsDisplayState, StatisticsPanel } from "#src/ui/statistics.js";
@@ -150,6 +153,7 @@ import { makeCopyUrlButton } from "#src/widget/copy_button.js";
 import { makeIcon } from "#src/widget/icon.js";
 import {
   CoordinateDisplayMode,
+  copyPositionToClipboard,
   MousePositionWidget,
   PositionWidget,
   registerDimensionToolForLayerGroupViewer,
@@ -289,7 +293,15 @@ class TrackableUiControlVisibility extends CompoundTrackable {
   }
 }
 
-class TrackableViewerState extends CompoundTrackable {
+export class TrackableViewerState extends CompoundTrackable {
+  /**
+   * `reset()` dispatches this signal after it resets each member. A view that
+   * keeps UI state outside this trackable subscribes to this signal, so the
+   * state does not call the view. `Viewer.resetInitiated` is a different
+   * event, which the viewer dispatches when the layer list becomes empty.
+   */
+  stateReset = new NullarySignal();
+
   constructor(public viewer: Borrowed<Viewer>) {
     super();
     this.add("title", viewer.title);
@@ -421,7 +433,7 @@ class TrackableViewerState extends CompoundTrackable {
 
   reset() {
     super.reset();
-    this.viewer.sidePanelManager.reset();
+    this.stateReset.dispatch();
   }
 }
 
@@ -776,6 +788,11 @@ export class Viewer extends RefCounted implements ViewerState {
     );
 
     this.state = new TrackableViewerState(this);
+    // Subscribe here and not in `makeUI()`, because `makeUI()` runs before
+    // the state exists.
+    this.registerDisposer(
+      this.state.stateReset.add(() => this.sidePanelManager.reset()),
+    );
 
     this.registerDisposer(
       new PlaybackManager(this.display, this.position, this.velocity),
@@ -992,15 +1009,7 @@ export class Viewer extends RefCounted implements ViewerState {
     {
       const button = makeCopyUrlButton({
         title: "Copy URL to clipboard",
-        onClick: () => {
-          const stateString = encodeStateAsFragment(this.state.toJSON());
-          const url = new URL(window.location.href);
-          url.hash = "#!" + stateString;
-          const result = setClipboard(url.href);
-          StatusMessage.showTemporaryMessage(
-            result ? "URL copied to clipboard" : "Failed to copy URL",
-          );
-        },
+        onClick: () => this.copyUrlToClipboard(),
       });
       this.registerDisposer(
         new ElementVisibilityFromTrackableBoolean(
@@ -1197,6 +1206,31 @@ export class Viewer extends RefCounted implements ViewerState {
     }
 
     this.bindAction("help", () => this.toggleHelpPanel());
+    this.bindAction("toggle-layer-list-panel", () => {
+      const { location } = this.layerListPanelState;
+      location.visible = !location.visible;
+    });
+    this.bindAction("toggle-selection-details-panel", () => {
+      const { location } = this.selectionDetailsState;
+      location.visible = !location.visible;
+    });
+    this.bindAction("toggle-settings-panel", () => {
+      const { location } = this.settingsPanelState;
+      location.visible = !location.visible;
+    });
+    this.bindAction("toggle-layer-side-panel", () => {
+      this.selectedLayer.visible = !this.selectedLayer.visible;
+    });
+    this.bindAction("new-tool-palette", () => {
+      this.toolPalettes.addNew();
+    });
+    this.bindAction("copy-url", () => this.copyUrlToClipboard());
+    this.bindAction("copy-position", () =>
+      copyPositionToClipboard(this.navigationState.position),
+    );
+    this.bindAction("copy-selection-position", () =>
+      copySelectionPositionToClipboard(this.selectionDetailsState),
+    );
 
     for (let i = 1; i <= 9; ++i) {
       this.bindAction(`toggle-layer-${i}`, () => {
@@ -1284,8 +1318,6 @@ export class Viewer extends RefCounted implements ViewerState {
     this.bindAction("deactivate-active-tool", () =>
       this.globalToolBinder.deactivate(),
     );
-    this.bindAction("edit-json-state", () => this.editJsonState());
-    this.bindAction("screenshot", () => this.showScreenshotDialog());
   }
 
   toggleHelpPanel() {
@@ -1351,6 +1383,16 @@ export class Viewer extends RefCounted implements ViewerState {
   showScreenshotDialog() {
     this.deactivateTools();
     new ScreenshotDialog(this.screenshotManager);
+  }
+
+  copyUrlToClipboard() {
+    const stateString = encodeStateAsFragment(this.state.toJSON());
+    const url = new URL(window.location.href);
+    url.hash = "#!" + stateString;
+    const result = setClipboard(url.href);
+    StatusMessage.showTemporaryMessage(
+      result ? "URL copied to clipboard" : "Failed to copy URL",
+    );
   }
 
   showStatistics(value: boolean | undefined = undefined) {
