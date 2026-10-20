@@ -833,6 +833,13 @@ interface AnnotationTypeRenderHandler<T extends Annotation> {
     offset: number,
     partIndex: number,
   ): void;
+  /**
+   * Whether `partIndex` refers to the whole annotation (e.g. a line picked along its body) rather
+   * than a single vertex. `updateViaRepresentativePoint` treats such a pick as "translate the
+   * whole shape", which callers that expect to move a single vertex (such as snap-to-fit) need to
+   * exclude. Types with only one part, such as points, are never a whole-object pick.
+   */
+  isFullObjectPick?(partIndex: number): boolean;
 }
 
 const annotationTypeRenderHandlers = new Map<

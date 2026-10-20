@@ -46,6 +46,13 @@ import {
   propertyTypeDataType,
 } from "#src/annotation/index.js";
 import {
+  DEFAULT_MIN_SAMPLES,
+  DEFAULT_POINT_FITTER,
+  DEFAULT_RELATIVE_THRESHOLD,
+  getPointFitterNames,
+  MAX_MIN_SAMPLES,
+} from "#src/annotation/point_fit.js";
+import {
   AnnotationLayer,
   PerspectiveViewAnnotationLayer,
   SliceViewAnnotationLayer,
@@ -60,7 +67,6 @@ import {
 import type { MouseSelectionState, UserLayer } from "#src/layer/index.js";
 import type { LoadedDataSubsource } from "#src/layer/layer_data_source.js";
 import type { ChunkTransformParameters } from "#src/render_coordinate_transform.js";
-import { getChunkPositionFromCombinedGlobalLocalPositions } from "#src/render_coordinate_transform.js";
 import {
   RenderScaleHistogram,
   trackableRenderScaleTarget,
@@ -82,8 +88,14 @@ import {
   ConditionalWatchableValue,
   makeCachedLazyDerivedWatchableValue,
   registerNested,
+  TrackableValue,
   WatchableValue,
 } from "#src/trackable_value.js";
+import {
+  DEFAULT_FIT_RADIUS,
+  getGlobalPositionInAnnotationCoordinates,
+  MAX_FIT_RADIUS,
+} from "#src/ui/annotation_fit.js";
 import type { AnnotationColorKey } from "#src/ui/annotation_properties.js";
 import {
   makeReadonlyColorProperty,
@@ -109,7 +121,12 @@ import { removeChildren } from "#src/util/dom.js";
 import { Endianness, ENDIANNESS } from "#src/util/endian.js";
 import type { ValueOrError } from "#src/util/error.js";
 import { vec3, vec4 } from "#src/util/geom.js";
-import { parseUint64 } from "#src/util/json.js";
+import {
+  parseUint64,
+  verifyFloat01,
+  verifyInt,
+  verifyString,
+} from "#src/util/json.js";
 import type { ActionEvent } from "#src/util/keyboard_bindings.js";
 import {
   EventActionMap,
@@ -130,6 +147,11 @@ import { makeDeleteButton } from "#src/widget/delete_button.js";
 import type { DependentViewContext } from "#src/widget/dependent_view_widget.js";
 import { DependentViewWidget } from "#src/widget/dependent_view_widget.js";
 import { makeIcon } from "#src/widget/icon.js";
+import type { LayerControlDefinition } from "#src/widget/layer_control.js";
+import { addLayerControlToOptionsTab } from "#src/widget/layer_control.js";
+import { checkboxLayerControl } from "#src/widget/layer_control_checkbox.js";
+import { rangeLayerControl } from "#src/widget/layer_control_range.js";
+import { selectLayerControl } from "#src/widget/layer_control_select.js";
 import { makeMoveToButton } from "#src/widget/move_to_button.js";
 import { Tab } from "#src/widget/tab_view.js";
 import type { VirtualListSource } from "#src/widget/virtual_list.js";
@@ -564,6 +586,12 @@ export class AnnotationLayerView extends Tab {
     );
     toolbox.appendChild(navRow);
     this.element.appendChild(toolbox);
+
+    for (const control of Object.values(ANNOTATION_FIT_LAYER_CONTROLS)) {
+      this.element.appendChild(
+        addLayerControlToOptionsTab(this, this.layer, this.visibility, control),
+      );
+    }
 
     this.element.appendChild(this.headerRow);
     const { virtualList } = this;
@@ -1155,6 +1183,7 @@ function getSelectedAssociatedSegments(
 
 abstract class PlaceAnnotationTool extends LegacyTool {
   declare layer: UserLayerWithAnnotations;
+
   constructor(layer: UserLayerWithAnnotations, options: any) {
     super(layer);
     options;
@@ -1165,6 +1194,24 @@ abstract class PlaceAnnotationTool extends LegacyTool {
       if (!state.source.readonly) return state;
     }
     return undefined;
+  }
+
+  /**
+   * The position to place a vertex at, in the coordinate space of `annotationLayer`.
+   *
+   * This is the single point through which every placement tool obtains a position.  Placement
+   * always uses the raw cursor position; snapping a placed (or already-existing) vertex to the
+   * fitted center of the surrounding image intensity is a separate, explicit action -- see
+   * `"fit-annotation-vertex"` in `#src/rendered_data_panel.js`.
+   */
+  protected getMousePosition(
+    mouseState: MouseSelectionState,
+    annotationLayer: AnnotationLayerState,
+  ): Float32Array | undefined {
+    return getGlobalPositionInAnnotationCoordinates(
+      mouseState.unsnappedPosition,
+      annotationLayer,
+    );
   }
 }
 
@@ -1182,10 +1229,7 @@ export class PlacePointTool extends PlaceAnnotationTool {
       return;
     }
     if (mouseState.updateUnconditionally()) {
-      const point = getMousePositionInAnnotationCoordinates(
-        mouseState,
-        annotationLayer,
-      );
+      const point = this.getMousePosition(mouseState, annotationLayer);
       if (point === undefined) return;
       const annotation: Annotation = {
         id: "",
@@ -1213,29 +1257,6 @@ export class PlacePointTool extends PlaceAnnotationTool {
   toJSON() {
     return ANNOTATE_POINT_TOOL_ID;
   }
-}
-
-function getMousePositionInAnnotationCoordinates(
-  mouseState: MouseSelectionState,
-  annotationLayer: AnnotationLayerState,
-): Float32Array | undefined {
-  const chunkTransform = annotationLayer.chunkTransform.value;
-  if (chunkTransform.error !== undefined) return undefined;
-  const chunkPosition = new Float32Array(
-    chunkTransform.modelTransform.unpaddedRank,
-  );
-  if (
-    !getChunkPositionFromCombinedGlobalLocalPositions(
-      chunkPosition,
-      mouseState.unsnappedPosition,
-      annotationLayer.localPosition.value,
-      chunkTransform.layerRank,
-      chunkTransform.combinedGlobalLocalToChunkTransform,
-    )
-  ) {
-    return undefined;
-  }
-  return chunkPosition;
 }
 
 abstract class MultiStepAnnotationTool extends PlaceAnnotationTool {
@@ -1298,7 +1319,7 @@ abstract class MultiStepAnnotationTool extends PlaceAnnotationTool {
           /*commit=*/ false,
         );
         this.layer.selectAnnotation(annotationLayer, reference.id, true);
-        const mouseDisposer = mouseState.changed.add(updateNextPoint);
+        const mouseDisposer = mouseState.changed.add(() => updateNextPoint());
         const disposer = () => {
           mouseDisposer();
           reference.dispose();
@@ -1395,7 +1416,7 @@ abstract class TwoStepAnnotationTool extends PlaceAnnotationTool {
           /*commit=*/ false,
         );
         this.layer.selectAnnotation(annotationLayer, reference.id, true);
-        const mouseDisposer = mouseState.changed.add(updatePointB);
+        const mouseDisposer = mouseState.changed.add(() => updatePointB());
         const disposer = () => {
           mouseDisposer();
           reference.dispose();
@@ -1439,10 +1460,7 @@ abstract class PlaceTwoCornerAnnotationTool extends TwoStepAnnotationTool {
     mouseState: MouseSelectionState,
     annotationLayer: AnnotationLayerState,
   ): Annotation {
-    const point = getMousePositionInAnnotationCoordinates(
-      mouseState,
-      annotationLayer,
-    );
+    const point = this.getMousePosition(mouseState, annotationLayer);
     return <AxisAlignedBoundingBox | Line>{
       id: "",
       type: this.annotationType,
@@ -1458,10 +1476,7 @@ abstract class PlaceTwoCornerAnnotationTool extends TwoStepAnnotationTool {
     mouseState: MouseSelectionState,
     annotationLayer: AnnotationLayerState,
   ): Annotation {
-    const point = getMousePositionInAnnotationCoordinates(
-      mouseState,
-      annotationLayer,
-    );
+    const point = this.getMousePosition(mouseState, annotationLayer);
     if (point === undefined) return oldAnnotation;
     return { ...oldAnnotation, pointB: point };
   }
@@ -1567,10 +1582,7 @@ class PlacePolylineTool extends MultiStepAnnotationTool {
     mouseState: MouseSelectionState,
     annotationLayer: AnnotationLayerState,
   ): Annotation {
-    const point = getMousePositionInAnnotationCoordinates(
-      mouseState,
-      annotationLayer,
-    );
+    const point = this.getMousePosition(mouseState, annotationLayer);
     this.storedRelationships = getSelectedAssociatedSegments(
       annotationLayer,
       this.getBaseSegment,
@@ -1607,10 +1619,7 @@ class PlacePolylineTool extends MultiStepAnnotationTool {
       };
     }
 
-    const point = getMousePositionInAnnotationCoordinates(
-      mouseState,
-      annotationLayer,
-    );
+    const point = this.getMousePosition(mouseState, annotationLayer);
     if (point === undefined)
       return { newAnnotation: oldAnnotation, finished: false };
 
@@ -1697,10 +1706,7 @@ class PlaceEllipsoidTool extends TwoStepAnnotationTool {
     mouseState: MouseSelectionState,
     annotationLayer: AnnotationLayerState,
   ): Annotation {
-    const point = getMousePositionInAnnotationCoordinates(
-      mouseState,
-      annotationLayer,
-    );
+    const point = this.getMousePosition(mouseState, annotationLayer);
 
     return <Ellipsoid>{
       type: AnnotationType.ELLIPSOID,
@@ -1718,10 +1724,7 @@ class PlaceEllipsoidTool extends TwoStepAnnotationTool {
     mouseState: MouseSelectionState,
     annotationLayer: AnnotationLayerState,
   ) {
-    const radii = getMousePositionInAnnotationCoordinates(
-      mouseState,
-      annotationLayer,
-    );
+    const radii = this.getMousePosition(mouseState, annotationLayer);
     if (radii === undefined) return oldAnnotation;
     const center = oldAnnotation.center;
     const rank = center.length;
@@ -1975,6 +1978,107 @@ function makeRelatedSegmentList(
 }
 
 const ANNOTATION_COLOR_JSON_KEY = "annotationColor";
+const ANNOTATION_FIT_RADIUS_JSON_KEY = "annotationFitRadius";
+const ANNOTATION_FIT_METHOD_JSON_KEY = "annotationFitMethod";
+const ANNOTATION_FIT_INVERT_JSON_KEY = "annotationFitInvert";
+const ANNOTATION_FIT_MIN_SAMPLES_JSON_KEY = "annotationFitMinSamples";
+const ANNOTATION_FIT_RELATIVE_THRESHOLD_JSON_KEY =
+  "annotationFitRelativeThreshold";
+
+function verifyFitRadius(obj: any): number {
+  const value = verifyInt(obj);
+  if (value < 1 || value > MAX_FIT_RADIUS) {
+    throw new Error(
+      `Expected integer in [1, ${MAX_FIT_RADIUS}], received: ${value}.`,
+    );
+  }
+  return value;
+}
+
+function verifyFitMethod(obj: any): string {
+  const names = getPointFitterNames();
+  const value = verifyString(obj);
+  if (!names.includes(value)) {
+    throw new Error(
+      `Expected one of ${JSON.stringify(names)}, received: ${JSON.stringify(value)}.`,
+    );
+  }
+  return value;
+}
+
+function verifyMinSamples(obj: any): number {
+  const value = verifyInt(obj);
+  if (value < 1 || value > MAX_MIN_SAMPLES) {
+    throw new Error(
+      `Expected integer in [1, ${MAX_MIN_SAMPLES}], received: ${value}.`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Controls for how Alt+Shift+Click fits a point, line endpoint or polyline vertex to the center
+ * of the surrounding image intensity, shown beneath the annotation toolbox.
+ */
+const ANNOTATION_FIT_LAYER_CONTROLS: Record<
+  string,
+  LayerControlDefinition<UserLayerWithAnnotations>
+> = {
+  [ANNOTATION_FIT_RADIUS_JSON_KEY]: {
+    label: "Fit radius",
+    title:
+      "Half-width, in voxels, of the image patch that Alt+Shift+Click fits over. Raise it for " +
+      "larger features, or when clicking further from the center than the current radius reaches.",
+    toolJson: ANNOTATION_FIT_RADIUS_JSON_KEY,
+    ...rangeLayerControl((layer) => ({
+      value: layer.annotationFit.radius,
+      options: { min: 1, max: MAX_FIT_RADIUS, step: 1 },
+    })),
+  },
+  [ANNOTATION_FIT_METHOD_JSON_KEY]: {
+    label: "Fit method",
+    title: "How the center of the sampled patch is estimated.",
+    toolJson: ANNOTATION_FIT_METHOD_JSON_KEY,
+    ...selectLayerControl((layer) => ({
+      value: layer.annotationFit.method,
+      // Read from the registry, so a newly registered fitter appears with no UI change.
+      options: getPointFitterNames().map((name) => ({
+        value: name,
+        label: name,
+      })),
+    })),
+  },
+  [ANNOTATION_FIT_INVERT_JSON_KEY]: {
+    label: "Dark feature",
+    title:
+      "Fit a dark blob on a bright background, rather than a bright blob on a dark background.",
+    toolJson: ANNOTATION_FIT_INVERT_JSON_KEY,
+    ...checkboxLayerControl((layer) => layer.annotationFit.invert),
+  },
+  [ANNOTATION_FIT_RELATIVE_THRESHOLD_JSON_KEY]: {
+    label: "Fit threshold",
+    title:
+      "Fraction of the peak height, above the background, that a sample must reach to be " +
+      "included in the fit. Raise it to confine the fit to a tighter core around the peak; " +
+      "lower it to let a wider skirt of the feature contribute.",
+    toolJson: ANNOTATION_FIT_RELATIVE_THRESHOLD_JSON_KEY,
+    ...rangeLayerControl((layer) => ({
+      value: layer.annotationFit.relativeThreshold,
+    })),
+  },
+  [ANNOTATION_FIT_MIN_SAMPLES_JSON_KEY]: {
+    label: "Fit min samples",
+    title:
+      "Minimum number of above-threshold samples required before a fit is attempted. Raise it " +
+      "to reject a lone hot pixel or a couple of them, which have no spatial extent to fit a " +
+      "Gaussian to.",
+    toolJson: ANNOTATION_FIT_MIN_SAMPLES_JSON_KEY,
+    ...rangeLayerControl((layer) => ({
+      value: layer.annotationFit.minSamples,
+      options: { min: 1, max: MAX_MIN_SAMPLES, step: 1 },
+    })),
+  },
+};
 export function UserLayerWithAnnotationsMixin<
   TBase extends { new (...args: any[]): UserLayer },
 >(Base: TBase) {
@@ -1986,10 +2090,31 @@ export function UserLayerWithAnnotationsMixin<
     annotationProjectionRenderScaleHistogram = new RenderScaleHistogram();
     annotationProjectionRenderScaleTarget = trackableRenderScaleTarget(8);
     allowDependentAnnotationViewUpdate = new TrackableBoolean(true);
+    /**
+     * Settings for the Alt+Shift+Click "fit vertex" gesture (`#src/rendered_data_panel.js`).
+     * Held on the layer, rather than on a tool, so that they apply no matter which tool (if any)
+     * is active, and so the settings survive switching between tools.
+     */
+    annotationFit = {
+      radius: new TrackableValue<number>(DEFAULT_FIT_RADIUS, verifyFitRadius),
+      method: new TrackableValue<string>(DEFAULT_POINT_FITTER, verifyFitMethod),
+      invert: new TrackableBoolean(false),
+      relativeThreshold: new TrackableValue<number>(
+        DEFAULT_RELATIVE_THRESHOLD,
+        verifyFloat01,
+      ),
+      minSamples: new TrackableValue<number>(
+        DEFAULT_MIN_SAMPLES,
+        verifyMinSamples,
+      ),
+    };
     static supportColorPickerInAnnotationTab = true;
 
     constructor(...args: any[]) {
       super(...args);
+      for (const value of Object.values(this.annotationFit)) {
+        value.changed.add(this.specificationChanged.dispatch);
+      }
       this.annotationDisplayState.color.changed.add(
         this.specificationChanged.dispatch,
       );
@@ -2112,6 +2237,21 @@ export function UserLayerWithAnnotationsMixin<
       super.restoreState(specification);
       this.annotationDisplayState.color.restoreState(
         specification[ANNOTATION_COLOR_JSON_KEY],
+      );
+      this.annotationFit.radius.restoreState(
+        specification[ANNOTATION_FIT_RADIUS_JSON_KEY],
+      );
+      this.annotationFit.method.restoreState(
+        specification[ANNOTATION_FIT_METHOD_JSON_KEY],
+      );
+      this.annotationFit.invert.restoreState(
+        specification[ANNOTATION_FIT_INVERT_JSON_KEY],
+      );
+      this.annotationFit.relativeThreshold.restoreState(
+        specification[ANNOTATION_FIT_RELATIVE_THRESHOLD_JSON_KEY],
+      );
+      this.annotationFit.minSamples.restoreState(
+        specification[ANNOTATION_FIT_MIN_SAMPLES_JSON_KEY],
       );
     }
 
@@ -2803,6 +2943,15 @@ export function UserLayerWithAnnotationsMixin<
     toJSON() {
       const x = super.toJSON();
       x[ANNOTATION_COLOR_JSON_KEY] = this.annotationDisplayState.color.toJSON();
+      // `TrackableValue.toJSON` returns `undefined` at the default, so defaults stay out of the
+      // serialized state.
+      x[ANNOTATION_FIT_RADIUS_JSON_KEY] = this.annotationFit.radius.toJSON();
+      x[ANNOTATION_FIT_METHOD_JSON_KEY] = this.annotationFit.method.toJSON();
+      x[ANNOTATION_FIT_INVERT_JSON_KEY] = this.annotationFit.invert.toJSON();
+      x[ANNOTATION_FIT_RELATIVE_THRESHOLD_JSON_KEY] =
+        this.annotationFit.relativeThreshold.toJSON();
+      x[ANNOTATION_FIT_MIN_SAMPLES_JSON_KEY] =
+        this.annotationFit.minSamples.toJSON();
       return x;
     }
   }

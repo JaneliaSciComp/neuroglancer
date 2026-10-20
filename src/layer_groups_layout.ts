@@ -406,6 +406,9 @@ function getCommonViewerState(viewer: Viewer) {
   return {
     mouseState: viewer.mouseState,
     showAxisLines: viewer.showAxisLines,
+    showCrossSectionHoverPosition: viewer.showCrossSectionHoverPosition,
+    measurementState: viewer.measurementState,
+    coordinateDisplayMode: viewer.coordinateDisplayMode,
     wireFrame: viewer.wireFrame,
     enableAdaptiveDownsampling: viewer.enableAdaptiveDownsampling,
     showScaleBar: viewer.showScaleBar,

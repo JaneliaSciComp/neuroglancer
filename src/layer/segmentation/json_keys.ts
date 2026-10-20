@@ -24,5 +24,6 @@ export const LINKED_SEGMENTATION_COLOR_GROUP_JSON_KEY =
   "linkedSegmentationColorGroup";
 export const SEGMENT_DEFAULT_COLOR_JSON_KEY = "segmentDefaultColor";
 export const ANCHOR_SEGMENT_JSON_KEY = "anchorSegment";
+export const CROSS_SECTION_OUTLINE_JSON_KEY = "crossSectionOutline";
 export const SKELETON_RENDERING_SHADER_CONTROL_TOOL_ID =
   "skeletonShaderControl";

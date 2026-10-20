@@ -74,7 +74,12 @@ import {
   registerActionListener,
 } from "#src/util/keyboard_bindings.js";
 import { EventActionMap, MouseEventBinder } from "#src/util/mouse_bindings.js";
-import { formatScaleWithUnit, parseScale } from "#src/util/si_units.js";
+import {
+  formatScaleWithUnit,
+  formatScaleWithUnitAsString,
+  parseScale,
+  pickSiPrefix,
+} from "#src/util/si_units.js";
 import { formatPositionText } from "#src/util/spatial_units.js";
 import { TrackableEnum } from "#src/util/trackable_enum.js";
 import { getWheelZoomAmount } from "#src/util/wheel_zoom.js";
@@ -1325,6 +1330,112 @@ export class PositionWidget extends RefCounted {
   }
 }
 
+// Controls whether coordinates are displayed as raw voxel indices or as
+// physical coordinates (voxel index multiplied by the dimension's scale,
+// formatted with SI units).
+export enum CoordinateDisplayMode {
+  VOXEL = 0,
+  PHYSICAL = 1,
+}
+
+// Formats a single coordinate as a physical quantity.  `pickSiPrefix` is
+// undefined for non-positive inputs (`Math.log10` gives `NaN`/`-Infinity`, and
+// the binary search then falls through to the smallest prefix), so the prefix is
+// chosen from the magnitude with the sign reapplied afterwards, and a zero
+// coordinate anchors its prefix to the dimension's own scale so that the origin
+// reads in the same unit as the values around it.
+function formatPhysicalCoordinate(
+  voxel: number,
+  scale: number,
+  unit: string,
+): string {
+  const physical = voxel * scale;
+  const magnitude = Math.abs(physical);
+  const absScale = Math.abs(scale);
+  const scaleExponent = Math.floor(Math.log10(absScale));
+  if (magnitude === 0) {
+    const prefix = Number.isFinite(scaleExponent)
+      ? pickSiPrefix(absScale).prefix
+      : "";
+    return `0${prefix}${unit}`;
+  }
+  const { exponent } = pickSiPrefix(magnitude);
+  // Show just enough decimals to resolve a single voxel, so that neither the
+  // float32 noise in the picked position nor a run of trailing zeros reaches
+  // the readout.  At least one decimal is requested because a `precision` of 0
+  // means "do not round at all"; the trailing-zero trimming in
+  // `formatScaleWithUnit` then drops it again when it is not needed.
+  const precision = Number.isFinite(scaleExponent)
+    ? Math.min(20, Math.max(1, exponent - scaleExponent))
+    : 6;
+  const formatted = formatScaleWithUnitAsString(magnitude, unit, {
+    elide1: false,
+    precision,
+  });
+  return physical < 0 ? `-${formatted}` : formatted;
+}
+
+/**
+ * Formats a single coordinate value for display.  Dimensions without a unit
+ * have no meaningful physical coordinate, and fall back to the voxel index, so
+ * that a coordinate space in which only some dimensions are calibrated still
+ * reads sensibly in `PHYSICAL` mode.
+ */
+export function formatCoordinate(
+  value: number,
+  scale: number,
+  unit: string,
+  mode: CoordinateDisplayMode,
+): string {
+  if (mode === CoordinateDisplayMode.PHYSICAL && unit !== "") {
+    return formatPhysicalCoordinate(value, scale, unit);
+  }
+  return `${Math.floor(value)}`;
+}
+
+/**
+ * Whether a coordinate space dimension measures time rather than space.
+ *
+ * A calibrated time axis carries seconds as its unit -- every supported time
+ * unit (ms, µs, ...) normalizes to `"s"` with a scale -- which is the reliable
+ * signal.  An *uncalibrated* axis has no unit at all, so fall back to the
+ * conventional name `t` there (any local `'` or channel `^` suffix stripped).
+ */
+export function isTimeDimension(name: string, unit: string): boolean {
+  if (unit === "s") return true;
+  return unit === "" && name.replace(/['^]+$/, "") === "t";
+}
+
+export interface FormatPositionOptions {
+  /**
+   * Omit time dimensions from the output.  Used for measurement labels, where a
+   * timepoint is not part of the geometry being measured.
+   */
+  omitTime?: boolean;
+}
+
+/**
+ * Formats every dimension of `position` as `<name> <coordinate>`, joined by two
+ * spaces.
+ */
+export function formatPosition(
+  position: Float32Array | Float64Array,
+  coordinateSpace: CoordinateSpace,
+  mode: CoordinateDisplayMode,
+  options: FormatPositionOptions = {},
+): string {
+  const { rank, names, scales, units } = coordinateSpace;
+  const { omitTime = false } = options;
+  const parts: string[] = [];
+  for (let i = 0; i < rank; ++i) {
+    if (omitTime && isTimeDimension(names[i], units[i])) continue;
+    parts.push(
+      `${names[i]} ${formatCoordinate(position[i], scales[i], units[i], mode)}`,
+    );
+  }
+  return parts.join("  ");
+}
+
 export class MousePositionWidget extends RefCounted {
   tempPosition = vec3.create();
   constructor(
@@ -1333,6 +1444,7 @@ export class MousePositionWidget extends RefCounted {
     public coordinateSpace: WatchableValueInterface<
       CoordinateSpace | undefined
     >,
+    public coordinateMode: WatchableValueInterface<CoordinateDisplayMode>,
   ) {
     super();
     element.className = "neuroglancer-mouse-position-widget";
@@ -1341,22 +1453,21 @@ export class MousePositionWidget extends RefCounted {
     );
     this.registerDisposer(mouseState.changed.add(updateViewFunction));
     this.registerDisposer(coordinateSpace.changed.add(updateViewFunction));
+    this.registerDisposer(coordinateMode.changed.add(updateViewFunction));
   }
   updateView() {
-    let text = "";
     const {
       mouseState,
       coordinateSpace: { value: coordinateSpace },
     } = this;
-    if (mouseState.active && coordinateSpace !== undefined) {
-      const p = mouseState.position;
-      const { rank, names } = coordinateSpace;
-      for (let i = 0; i < rank; ++i) {
-        if (i !== 0) text += "  ";
-        text += `${names[i]} ${Math.floor(p[i])}`;
-      }
-    }
-    this.element.textContent = text;
+    this.element.textContent =
+      mouseState.active && coordinateSpace !== undefined
+        ? formatPosition(
+            mouseState.position,
+            coordinateSpace,
+            this.coordinateMode.value,
+          )
+        : "";
   }
   disposed() {
     removeFromParent(this.element);

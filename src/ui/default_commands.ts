@@ -105,6 +105,17 @@ const STATIC_COMMANDS: readonly BuiltinCommand[] = [
     description: "Show or hide the axis line indicators.",
   },
   {
+    id: "toggle-cross-section-hover-position",
+    label: "Toggle Cross-Section Hover Position",
+    description: "Show or hide the hover position in all cross-sections.",
+  },
+  {
+    id: "toggle-coordinate-units",
+    label: "Toggle Coordinate Units",
+    description:
+      "Switch the cursor position readout between voxel and physical coordinates.",
+  },
+  {
     id: "toggle-orthographic-projection",
     label: "Toggle Orthographic Projection",
     description:
@@ -229,6 +240,20 @@ const STATIC_COMMANDS: readonly BuiltinCommand[] = [
     id: "undo-annotation-step",
     label: "Undo Annotation Step",
     description: "Undo the last point added to the in-progress annotation.",
+  },
+  // Measurement.  Both arm a mode rather than acting immediately, so they take
+  // no event detail and are invocable from the palette.
+  {
+    id: "measure-line-mode",
+    label: "Measure Line",
+    description:
+      "Measure a distance on a cross section. Click to set the start point, click again to finish, Escape to exit.",
+  },
+  {
+    id: "measure-box-mode",
+    label: "Measure Box",
+    description:
+      "Measure a rectangle on a cross section. Click to set a corner, click again to finish, Escape to exit.",
   },
   // Actions with no default key binding; before the registry the palette had to
   // special-case these to surface them at all.
