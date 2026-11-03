@@ -256,13 +256,15 @@ void emitRGBA(vec4 color) {
   color.a *= uColor.a;
   color.rgb *= color.a;
   vec4 borderColor = color;
-  emit(getCircleColor(color, borderColor), uPickID);
+  vec4 circleColor = getCircleColor(color, borderColor);
+  emit(circleColor, uPickID);
 }
 void emitRGB(vec3 color) {
   emitRGBA(vec4(color, 1.0));
 }
 void emitDefault() {
-  emit(getCircleColor(uColor, uColor), uPickID);
+  vec4 circleColor = getCircleColor(uColor, uColor);
+  emit(circleColor, uPickID);
 }
 `);
           builder.addFragmentCode(glsl_COLORMAPS);
@@ -596,6 +598,7 @@ export class SkeletonLayer extends RefCounted {
 
     edgeShader.bind();
     renderHelper.beginLayer(gl, edgeShader, renderContext, modelMatrix);
+    shaderControlState.activeControls.trackShader(edgeShaderResult, attachment);
     setControlsInShader(
       gl,
       edgeShader,
@@ -607,6 +610,7 @@ export class SkeletonLayer extends RefCounted {
     nodeShader.bind();
     renderHelper.beginLayer(gl, nodeShader, renderContext, modelMatrix);
     gl.uniform1f(nodeShader.uniform("uNodeDiameter"), pointDiameter);
+    shaderControlState.activeControls.trackShader(nodeShaderResult, attachment);
     setControlsInShader(
       gl,
       nodeShader,
