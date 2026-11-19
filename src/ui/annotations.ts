@@ -140,6 +140,8 @@ import { numberToStringFixed } from "#src/util/number_to_string.js";
 import { formatScaleWithUnitAsString } from "#src/util/si_units.js";
 import { NullarySignal, Signal } from "#src/util/signal.js";
 import * as vector from "#src/util/vector.js";
+import type { AccordionState } from "#src/widget/accordion.js";
+import { AccordionTab } from "#src/widget/accordion.js";
 import { makeAddButton } from "#src/widget/add_button.js";
 import { ColorWidget } from "#src/widget/color.js";
 import { makeCopyButton } from "#src/widget/copy_button.js";
@@ -300,7 +302,7 @@ interface AnnotationLayerViewAttachedState {
   listOffset: number;
 }
 
-export class AnnotationLayerView extends Tab {
+export class AnnotationLayerView extends AccordionTab {
   private previousSelectedState:
     | {
         annotationId: string;
@@ -448,8 +450,9 @@ export class AnnotationLayerView extends Tab {
   constructor(
     public layer: Borrowed<UserLayerWithAnnotations>,
     public displayState: AnnotationDisplayState,
+    public annotationAccordionState: AccordionState,
   ) {
-    super();
+    super(annotationAccordionState);
     this.element.classList.add("neuroglancer-annotation-layer-view");
     this.selectedAnnotationState = makeCachedLazyDerivedWatchableValue(
       (selectionState, pin) => {
@@ -593,10 +596,10 @@ export class AnnotationLayerView extends Tab {
       );
     }
 
-    this.element.appendChild(this.headerRow);
+    this.appendChild(this.headerRow);
     const { virtualList } = this;
     virtualList.element.classList.add("neuroglancer-annotation-list");
-    this.element.appendChild(virtualList.element);
+    this.appendChild(virtualList.element);
     this.virtualList.element.addEventListener("mouseleave", () => {
       this.displayState.hoverState.value = undefined;
     });
@@ -1145,7 +1148,11 @@ export class AnnotationTab extends Tab {
   constructor(public layer: Borrowed<UserLayerWithAnnotations>) {
     super();
     this.layerView = this.registerDisposer(
-      new AnnotationLayerView(layer, layer.annotationDisplayState),
+      new AnnotationLayerView(
+        layer,
+        layer.annotationDisplayState,
+        layer.annotationAccordionState,
+      ),
     );
 
     const { element } = this;
@@ -2079,12 +2086,33 @@ const ANNOTATION_FIT_LAYER_CONTROLS: Record<
     })),
   },
 };
+export const ANNOTATION_SECTION_JSON_KEY = "annotationsExpanded";
+export const RELATED_SEGMENT_SECTION_JSON_KEY = "relatedSegmentsExpanded";
+export const SPACING_SECTION_JSON_KEY = "spacingExpanded";
 export function UserLayerWithAnnotationsMixin<
   TBase extends { new (...args: any[]): UserLayer },
 >(Base: TBase) {
   abstract class C extends Base implements UserLayerWithAnnotations {
     annotationStates = this.registerDisposer(new MergedAnnotationStates());
     annotationDisplayState = new AnnotationDisplayState();
+    annotationAccordionState = this.accordions.add("annotations", {
+      sections: [
+        {
+          jsonKey: SPACING_SECTION_JSON_KEY,
+          displayName: "Spacing",
+        },
+        {
+          jsonKey: RELATED_SEGMENT_SECTION_JSON_KEY,
+          displayName: "Related segments",
+        },
+        {
+          jsonKey: ANNOTATION_SECTION_JSON_KEY,
+          displayName: "Annotations",
+          defaultExpanded: true,
+          isDefaultKey: true,
+        },
+      ],
+    });
     annotationCrossSectionRenderScaleHistogram = new RenderScaleHistogram();
     annotationCrossSectionRenderScaleTarget = trackableRenderScaleTarget(8);
     annotationProjectionRenderScaleHistogram = new RenderScaleHistogram();
